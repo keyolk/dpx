@@ -21,13 +21,20 @@ import (
 type Config struct {
 	Token   string
 	APIHost string
+	// DashboardHost is where "open in browser" points. It is read from the
+	// same places as APIHost rather than hardcoded, so a self-hosted or
+	// non-default instance opens its own dashboard instead of the public one.
+	DashboardHost string
 	// Source records where the token came from, for the error message when a
 	// request is rejected — "which token is it even using" is the first
 	// question a 401 raises.
 	Source string
 }
 
-const defaultAPIHost = "https://api.doppler.com"
+const (
+	defaultAPIHost       = "https://api.doppler.com"
+	defaultDashboardHost = "https://dashboard.doppler.com"
+)
 
 // dopplerYAML mirrors the subset of ~/.doppler/.doppler.yaml that we read.
 //
@@ -37,10 +44,14 @@ const defaultAPIHost = "https://api.doppler.com"
 // blindly taking "/", or dpx would use the wrong workplace inside a repo that
 // the CLI scopes elsewhere.
 type dopplerYAML struct {
-	Scoped map[string]struct {
-		Token   string `yaml:"token"`
-		APIHost string `yaml:"api-host"`
-	} `yaml:"scoped"`
+	Scoped map[string]scopeEntry `yaml:"scoped"`
+}
+
+// scopeEntry is one directory scope's settings.
+type scopeEntry struct {
+	Token         string `yaml:"token"`
+	APIHost       string `yaml:"api-host"`
+	DashboardHost string `yaml:"dashboard-host"`
 }
 
 // DefaultPath returns the conventional location of the Doppler CLI config.
@@ -58,13 +69,16 @@ func DefaultPath() string {
 // Load resolves a token for the given working directory. $DOPPLER_TOKEN wins,
 // matching the CLI's own precedence; otherwise the scoped store is consulted.
 func Load(path, workdir string) (Config, error) {
-	cfg := Config{APIHost: defaultAPIHost}
+	cfg := Config{APIHost: defaultAPIHost, DashboardHost: defaultDashboardHost}
 
 	if v := strings.TrimSpace(os.Getenv("DOPPLER_TOKEN")); v != "" {
 		cfg.Token = v
 		cfg.Source = "$DOPPLER_TOKEN"
 		if h := strings.TrimSpace(os.Getenv("DOPPLER_API_HOST")); h != "" {
 			cfg.APIHost = h
+		}
+		if h := strings.TrimSpace(os.Getenv("DOPPLER_DASHBOARD_HOST")); h != "" {
+			cfg.DashboardHost = h
 		}
 		return cfg, nil
 	}
@@ -94,21 +108,17 @@ func Load(path, workdir string) (Config, error) {
 	if h := strings.TrimSpace(entry.APIHost); h != "" {
 		cfg.APIHost = h
 	}
+	if h := strings.TrimSpace(entry.DashboardHost); h != "" {
+		cfg.DashboardHost = h
+	}
 	return cfg, nil
 }
 
 // longestScope picks the scope whose path is the longest prefix of workdir,
 // which is how the Doppler CLI resolves a token for the current directory.
-func longestScope(y dopplerYAML, workdir string) (string, struct {
-	Token   string `yaml:"token"`
-	APIHost string `yaml:"api-host"`
-}, bool) {
-	var zero struct {
-		Token   string `yaml:"token"`
-		APIHost string `yaml:"api-host"`
-	}
+func longestScope(y dopplerYAML, workdir string) (string, scopeEntry, bool) {
 	if len(y.Scoped) == 0 {
-		return "", zero, false
+		return "", scopeEntry{}, false
 	}
 	scopes := make([]string, 0, len(y.Scoped))
 	for k := range y.Scoped {
@@ -123,7 +133,7 @@ func longestScope(y dopplerYAML, workdir string) (string, struct {
 			return s, y.Scoped[s], true
 		}
 	}
-	return "", zero, false
+	return "", scopeEntry{}, false
 }
 
 // withinScope reports whether dir is scope or lives under it. A string prefix

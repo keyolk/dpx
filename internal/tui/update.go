@@ -152,6 +152,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "y":
 		return m.copyCurrent()
+	case "o":
+		return m.openInBrowser()
 	}
 	return m, nil
 }

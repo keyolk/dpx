@@ -9,11 +9,20 @@ import (
 // writeScoped writes a .doppler.yaml with the given scopes.
 func writeScoped(t *testing.T, scopes map[string]string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), ".doppler.yaml")
-	body := "scoped:\n"
+	return writeYAML(t, "scoped:\n"+scopeBlocks(scopes))
+}
+
+func scopeBlocks(scopes map[string]string) string {
+	var body string
 	for k, v := range scopes {
 		body += "    " + k + ":\n        token: " + v + "\n"
 	}
+	return body
+}
+
+func writeYAML(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), ".doppler.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +48,7 @@ func TestLoadPrefersEnvToken(t *testing.T) {
 func TestLoadPicksLongestMatchingScope(t *testing.T) {
 	t.Setenv("DOPPLER_TOKEN", "")
 	path := writeScoped(t, map[string]string{
-		"/":                 "dp.root",
+		"/":                "dp.root",
 		"/home/u/src":      "dp.src",
 		"/home/u/src/repo": "dp.repo",
 	})
@@ -115,4 +124,53 @@ func contains(s, sub string) bool {
 		}
 		return false
 	})()
+}
+
+// The dashboard host decides where "open in browser" lands, so a self-hosted
+// instance's own value must win over the public default.
+func TestDashboardHostComesFromScope(t *testing.T) {
+	t.Setenv("DOPPLER_TOKEN", "")
+	path := writeYAML(t, `scoped:
+    /:
+        token: dp.root
+        api-host: https://api.internal.example
+        dashboard-host: https://dash.internal.example
+`)
+
+	cfg, err := Load(path, "/anywhere")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.DashboardHost != "https://dash.internal.example" {
+		t.Errorf("dashboard host = %q, want the scope's", cfg.DashboardHost)
+	}
+	if cfg.APIHost != "https://api.internal.example" {
+		t.Errorf("api host = %q, want the scope's", cfg.APIHost)
+	}
+}
+
+func TestDashboardHostDefaultsWhenAbsent(t *testing.T) {
+	t.Setenv("DOPPLER_TOKEN", "")
+	path := writeScoped(t, map[string]string{"/": "dp.root"})
+
+	cfg, err := Load(path, "/anywhere")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.DashboardHost != defaultDashboardHost {
+		t.Errorf("dashboard host = %q, want the default", cfg.DashboardHost)
+	}
+}
+
+func TestDashboardHostFromEnv(t *testing.T) {
+	t.Setenv("DOPPLER_TOKEN", "dp.env")
+	t.Setenv("DOPPLER_DASHBOARD_HOST", "https://dash.env.example")
+
+	cfg, err := Load("", "/")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.DashboardHost != "https://dash.env.example" {
+		t.Errorf("dashboard host = %q, want the environment's", cfg.DashboardHost)
+	}
 }

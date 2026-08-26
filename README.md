@@ -8,6 +8,7 @@ dpx projects [filter]            # list projects
 dpx configs <project>            # list a project's configs
 dpx secrets <project> <config>   # list secret names
 dpx get <project> <config> <key> # print one value to stdout
+dpx open [project] [config]      # open the dashboard page in a browser
 ```
 
 ## Authentication
@@ -67,8 +68,20 @@ export DB_PASSWORD=$(dpx get my-project prd DB_PASSWORD)
 | `r` | revalidate the current level |
 | `s` / `S` | reveal the selected value / the whole config |
 | `y` | copy (name, or value when revealed) |
+| `o` | open the dashboard page for whatever the cursor is on |
 | `?` | help |
 | `q` | quit |
+
+## Opening the dashboard
+
+`o` in the browser, or `dpx open` from the shell, opens the Doppler dashboard
+page for what you are looking at — the highlighted project on the project list,
+the highlighted config below that. The secrets screen opens its config, since
+the dashboard has no per-secret page.
+
+`$BROWSER` is honored. `dpx open --print` writes the URL instead of opening it.
+The dashboard host comes from the same config the token does, so a self-hosted
+instance opens its own dashboard rather than the public one.
 
 ## Build
 
