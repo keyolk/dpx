@@ -147,11 +147,11 @@ func (m *Model) footerView() string {
 	case m.filtering:
 		hints = []string{"type to filter", "↑↓ move", "enter accept", "esc clear"}
 	case m.screen == screenProjects:
-		hints = []string{"enter open", "/ filter", "r refresh", "y copy", "? help", "q quit"}
+		hints = []string{"enter open", "/ filter", "o browser", "r refresh", "y copy", "? help", "q quit"}
 	case m.screen == screenConfigs:
-		hints = []string{"enter open", "esc back", "/ filter", "r refresh", "y copy", "? help"}
+		hints = []string{"enter open", "esc back", "/ filter", "o browser", "y copy", "r refresh", "? help"}
 	case m.screen == screenSecrets:
-		hints = []string{"s reveal", "S reveal all", "y copy", "enter detail", "esc back", "? help"}
+		hints = []string{"s reveal", "S reveal all", "y copy", "o browser", "enter detail", "esc back", "? help"}
 	}
 	// Hints are dropped from the right rather than truncated mid-word: half a
 	// keybinding is noise, and the list is already ordered by how often each
@@ -223,6 +223,7 @@ func (m *Model) helpView() string {
 		{"s", "reveal the selected secret's value"},
 		{"S", "reveal every value in the config"},
 		{"y", "copy the selected item"},
+		{"o", "open the dashboard page in a browser"},
 		{"?", "this help"},
 		{"q", "quit / leave help"},
 	}

@@ -13,6 +13,8 @@ import (
 
 	dpxapp "github.com/keyolk/dpx/internal/app"
 	"github.com/keyolk/dpx/internal/cache"
+	"github.com/keyolk/dpx/internal/config"
+	"github.com/keyolk/dpx/internal/dashboard"
 	"github.com/keyolk/dpx/internal/doppler"
 )
 
@@ -178,6 +180,57 @@ command; diagnostics go to stderr.`,
 		},
 	}
 	cmd.Flags().BoolVar(&raw, "raw", false, "print the stored value without resolving references")
+	return cmd
+}
+
+func newOpenCmd() *cobra.Command {
+	var printOnly bool
+	cmd := &cobra.Command{
+		Use:   "open [project] [config]",
+		Short: "Open the Doppler dashboard in a browser",
+		Long: `Open the Doppler dashboard in a browser.
+
+With no arguments this opens the workplace; a project opens that project, and
+a project with a config opens the config's secrets page.
+
+$BROWSER is honored when set. --print writes the URL to stdout instead of
+opening it, for piping somewhere else.`,
+		Args: cobra.MaximumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var project, configName string
+			if len(args) > 0 {
+				project = args[0]
+			}
+			if len(args) > 1 {
+				configName = args[1]
+			}
+
+			// Resolving config only needs the dashboard host, so this path
+			// deliberately avoids Open(): building a URL must not depend on
+			// the network or on a warm cache.
+			wd, err := os.Getwd()
+			if err != nil {
+				wd = "/"
+			}
+			cfg, err := config.Load(flagConfig, wd)
+			if err != nil {
+				return err
+			}
+
+			u := dashboard.URL(cfg.DashboardHost, project, configName)
+			if printOnly {
+				// A printed URL is usually piped straight into something that
+				// opens it, so it gets the same check as opening it here.
+				if err := dashboard.Validate(u); err != nil {
+					return err
+				}
+				fmt.Println(u)
+				return nil
+			}
+			return dashboard.Open(u)
+		},
+	}
+	cmd.Flags().BoolVar(&printOnly, "print", false, "print the URL instead of opening it")
 	return cmd
 }
 
