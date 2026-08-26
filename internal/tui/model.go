@@ -1,0 +1,307 @@
+// Package tui implements dpx's interactive Doppler browser.
+//
+// The shape is a drill-down stack rather than a persistent multi-panel: the
+// hierarchy is strictly three levels deep and each level is a plain list, so a
+// stack stays readable in a 60-column tmux split where three side-by-side
+// panes would not.
+//
+//	projects → configs → secret names → [reveal one value]
+//
+// Values are the one thing that is never fetched implicitly. Navigating shows
+// names only; a value is fetched when someone asks for it, and never written
+// to disk.
+package tui
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
+	dpxapp "github.com/keyolk/dpx/internal/app"
+	"github.com/keyolk/dpx/internal/doppler"
+)
+
+type screen int
+
+const (
+	screenProjects screen = iota
+	screenConfigs
+	screenSecrets
+	screenHelp
+)
+
+const (
+	minWidth  = 50
+	minHeight = 12
+)
+
+// Model is the Bubble Tea model.
+type Model struct {
+	ctx context.Context
+	app *dpxapp.Context
+
+	st     *styles
+	gl     glyphSet
+	width  int
+	height int
+	small  bool
+
+	screen   screen
+	helpBack screen
+
+	projects list
+	configs  list
+	secrets  list
+
+	curProject string
+	curConfig  string
+	curEnv     string
+
+	// revealed holds the values for curConfig once someone asked for them.
+	// It is dropped on every navigation, so a value never outlives the screen
+	// that asked for it.
+	revealed  map[string]doppler.Secret
+	revealAll bool
+	// detail is the secret currently expanded in the detail pane.
+	detail string
+
+	filtering bool
+	// inflight counts background fetches, so the spinner runs while any is
+	// outstanding and stops at zero rather than on a timer.
+	inflight int
+	spinTick int
+	status   string
+	statusOK bool
+	errText  string
+
+	// loading marks project/config keys with a fetch already in flight, so
+	// moving the cursor across a list does not queue the same fetch twice.
+	loading map[string]bool
+}
+
+// Run starts the browser.
+func Run(ctx context.Context, app *dpxapp.Context) error {
+	m := &Model{
+		ctx:      ctx,
+		app:      app,
+		st:       newStyles(),
+		gl:       detectGlyphs(),
+		screen:   screenProjects,
+		revealed: map[string]doppler.Secret{},
+		loading:  map[string]bool{},
+	}
+	m.rebuildProjects()
+
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx))
+	_, err := p.Run()
+	// The cache is written on every mutation, but a final flush catches
+	// anything a fetch landed just before quit.
+	if perr := app.Store.Persist(); perr != nil && err == nil {
+		return perr
+	}
+	return err
+}
+
+func (m *Model) Init() tea.Cmd {
+	// A stale or cold listing refreshes in the background; the cached rows are
+	// already on screen by then.
+	if m.app.Stale {
+		return m.refreshProjectsCmd()
+	}
+	return nil
+}
+
+// ---- messages -------------------------------------------------------------
+
+type projectsMsg struct{ err error }
+
+type projectLoadedMsg struct {
+	project string
+	err     error
+}
+
+type secretNamesMsg struct {
+	project, config string
+	err             error
+}
+
+type revealMsg struct {
+	project, config string
+	secrets         []doppler.Secret
+	err             error
+}
+
+type spinMsg struct{}
+
+// spinCmd schedules the next spinner frame. It is only ever scheduled while a
+// fetch is in flight, which is what keeps the app at 0 fps when idle.
+func spinCmd() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinMsg{} })
+}
+
+func (m *Model) refreshProjectsCmd() tea.Cmd {
+	m.inflight++
+	return tea.Batch(spinCmd(), func() tea.Msg {
+		return projectsMsg{err: m.app.RefreshProjects(m.ctx)}
+	})
+}
+
+func (m *Model) loadProjectCmd(project string) tea.Cmd {
+	if m.loading[project] {
+		return nil
+	}
+	m.loading[project] = true
+	m.inflight++
+	return tea.Batch(spinCmd(), func() tea.Msg {
+		return projectLoadedMsg{project: project, err: m.app.LoadProject(m.ctx, project)}
+	})
+}
+
+func (m *Model) loadSecretNamesCmd(project, config string) tea.Cmd {
+	key := project + "\x00" + config
+	if m.loading[key] {
+		return nil
+	}
+	m.loading[key] = true
+	m.inflight++
+	return tea.Batch(spinCmd(), func() tea.Msg {
+		return secretNamesMsg{
+			project: project, config: config,
+			err: m.app.LoadSecretNames(m.ctx, project, config),
+		}
+	})
+}
+
+func (m *Model) revealCmd(project, config string) tea.Cmd {
+	m.inflight++
+	return tea.Batch(spinCmd(), func() tea.Msg {
+		secrets, err := m.app.RevealSecrets(m.ctx, project, config)
+		return revealMsg{project: project, config: config, secrets: secrets, err: err}
+	})
+}
+
+// ---- row construction -----------------------------------------------------
+
+func (m *Model) rebuildProjects() {
+	projects := m.app.Store.Projects()
+	rows := make([]row, 0, len(projects))
+	for _, p := range projects {
+		meta := ""
+		if e := m.app.Store.Entry(p.Name); e.Loaded() {
+			// Only a walked project can report its config count; showing a
+			// blank rather than 0 keeps "not looked at yet" distinct from
+			// "genuinely has none".
+			meta = m.st.dim.Render(fmt.Sprintf("%d cfg", len(e.Configs)))
+		}
+		desc := p.Description
+		if desc != "" {
+			meta = m.st.dim.Render(truncCells(desc, 40)) + "  " + meta
+		}
+		rows = append(rows, row{label: p.Name, meta: strings.TrimSpace(meta)})
+	}
+	m.projects.setRows(rows)
+}
+
+func (m *Model) rebuildConfigs() {
+	cfgs := m.app.Store.Configs(m.curProject)
+	envName := map[string]string{}
+	for _, e := range m.app.Store.Envs(m.curProject) {
+		envName[e.Slug] = e.Name
+	}
+
+	rows := make([]row, 0, len(cfgs))
+	for _, c := range cfgs {
+		var parts []string
+		if c.Root {
+			parts = append(parts, m.st.dim.Render("root"))
+		}
+		if c.Locked {
+			parts = append(parts, m.st.warn.Render(m.gl.lock))
+		}
+		if c.Inheriting && len(c.Inherits) > 0 {
+			// An inheriting config's secrets come from elsewhere; without this
+			// the values look like they live here.
+			var from []string
+			for _, in := range c.Inherits {
+				from = append(from, in.Config)
+			}
+			parts = append(parts, m.st.info.Render(m.gl.arrow+" "+strings.Join(from, ",")))
+		}
+		if sn := m.app.Store.SecretNames(m.curProject, c.Name); sn != nil {
+			parts = append(parts, m.st.dim.Render(fmt.Sprintf("%d", len(sn.Names))))
+		}
+		rows = append(rows, row{
+			label:    c.Name,
+			tag:      c.Environment,
+			tagStyle: m.envStyle(c.Environment),
+			meta:     strings.Join(parts, " "),
+		})
+	}
+	m.configs.setRows(rows)
+}
+
+// envStyle colors an environment slug by risk. Production is the one a reader
+// must never mistake for staging, so it gets the warning color and every other
+// environment stays neutral — coloring all of them would make none of them
+// stand out.
+func (m *Model) envStyle(slug string) lipgloss.Style {
+	switch strings.ToLower(slug) {
+	case "prd", "prod", "production":
+		return m.st.warn
+	case "stg", "staging":
+		return m.st.info
+	default:
+		return m.st.dim
+	}
+}
+
+func (m *Model) rebuildSecrets() {
+	sn := m.app.Store.SecretNames(m.curProject, m.curConfig)
+	var names []string
+	if sn != nil {
+		names = sn.Names
+	}
+	sort.Strings(names)
+
+	rows := make([]row, 0, len(names))
+	for _, n := range names {
+		meta := ""
+		// A fetched value is only shown for the secret that was asked about,
+		// unless the whole config was revealed. One request brings every
+		// value, but showing all of them because someone asked about one would
+		// put the rest of the config on screen unasked.
+		shown := m.revealAll || n == m.detail
+		if s, ok := m.revealed[n]; ok && shown {
+			switch {
+			case s.Restricted():
+				meta = m.st.warn.Render("restricted")
+			case s.Referenced():
+				// The stored value is a reference; showing the computed form
+				// alone would hide that fact.
+				meta = m.st.info.Render(truncCells(s.Computed, 48))
+			default:
+				meta = m.st.success.Render(truncCells(s.Computed, 48))
+			}
+		} else if isDopplerMeta(n) {
+			meta = m.st.dim.Render("doppler")
+		}
+		rows = append(rows, row{label: n, meta: meta, dimmed: isDopplerMeta(n)})
+	}
+	m.secrets.setRows(rows)
+}
+
+// isDopplerMeta marks the four variables Doppler injects into every config.
+// They are never what someone is looking for, so they are dimmed rather than
+// hidden — hiding them would make the count disagree with the dashboard.
+func isDopplerMeta(name string) bool {
+	switch name {
+	case "DOPPLER_PROJECT", "DOPPLER_CONFIG", "DOPPLER_ENVIRONMENT", "DOPPLER_ENCLAVE_PROJECT", "DOPPLER_ENCLAVE_CONFIG":
+		return true
+	}
+	return false
+}
