@@ -33,7 +33,7 @@ import (
 
 // Version is bumped when the on-disk shape changes; a mismatch is treated as a
 // cold start rather than a parse error.
-const Version = 1
+const Version = 2
 
 // Snapshot is the whole local view of one workplace, as persisted.
 type Snapshot struct {
@@ -48,6 +48,19 @@ type Snapshot struct {
 
 	// Projects is keyed by project name.
 	Projects map[string]*ProjectEntry `json:"projects"`
+
+	// UserPages resolves member slugs to names. It is workplace-wide rather
+	// than per-project because the same people recur across every project.
+	UserPages []doppler.Page[doppler.WorkplaceUser] `json:"userPages,omitempty"`
+	// RoleETag/Roles are the project roles the workplace defines, including
+	// custom ones, so the role picker offers what exists rather than a
+	// hardcoded set.
+	RoleETag string                `json:"roleEtag,omitempty"`
+	Roles    []doppler.ProjectRole `json:"roles,omitempty"`
+	// GroupETag/Groups resolve group members, which hold project access
+	// alongside individual users.
+	GroupETag string          `json:"groupEtag,omitempty"`
+	Groups    []doppler.Group `json:"groups,omitempty"`
 }
 
 // ProjectEntry is one project's lazily-filled detail.
@@ -64,7 +77,16 @@ type ProjectEntry struct {
 
 	// Secrets is keyed by config name and holds names only, never values.
 	Secrets map[string]*SecretNames `json:"secrets,omitempty"`
+
+	// Members is who can reach this project. Cached like every other listing:
+	// it is an access grant, not a credential.
+	MemberETag string           `json:"memberEtag,omitempty"`
+	Members    []doppler.Member `json:"members,omitempty"`
+	MembersAt  time.Time        `json:"membersAt,omitempty"`
 }
+
+// MembersLoaded reports whether the member list has been fetched at least once.
+func (e *ProjectEntry) MembersLoaded() bool { return e != nil && !e.MembersAt.IsZero() }
 
 // SecretNames is one config's cached name list.
 type SecretNames struct {
@@ -243,6 +265,141 @@ func (st *Store) SetProjectDetail(project string, envs []doppler.Environment, en
 		e.CfgETag = cfgETag
 	}
 	e.LoadedAt = time.Now()
+	st.dirty = true
+}
+
+// Members returns a project's cached access list.
+func (st *Store) Members(project string) []doppler.Member {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	e := st.snap.Projects[project]
+	if e == nil {
+		return nil
+	}
+	out := make([]doppler.Member, len(e.Members))
+	copy(out, e.Members)
+	return out
+}
+
+// MemberETag returns the ETag that revalidates a project's member list.
+func (st *Store) MemberETag(project string) string {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	if e := st.snap.Projects[project]; e != nil {
+		return e.MemberETag
+	}
+	return ""
+}
+
+// SetMembers records a project's access list. A 304 arrives as nil members
+// with the same ETag, which keeps what was already there.
+func (st *Store) SetMembers(project string, members []doppler.Member, etag string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	e := st.snap.Projects[project]
+	if e == nil {
+		e = &ProjectEntry{}
+		st.snap.Projects[project] = e
+	}
+	if members != nil {
+		e.Members = members
+	}
+	if etag != "" {
+		e.MemberETag = etag
+	}
+	e.MembersAt = time.Now()
+	st.dirty = true
+}
+
+// InvalidateMembers drops a project's cached access list, so the next read
+// refetches rather than revalidating. A mutation the API accepted makes the
+// cached list wrong, and an ETag sweep would happily confirm the stale one.
+func (st *Store) InvalidateMembers(project string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if e := st.snap.Projects[project]; e != nil {
+		e.Members, e.MemberETag, e.MembersAt = nil, "", time.Time{}
+		st.dirty = true
+	}
+}
+
+// Users returns every workplace user, for resolving member slugs to names.
+func (st *Store) Users() []doppler.WorkplaceUser {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	return doppler.Flatten(st.snap.UserPages)
+}
+
+// UserPages returns the paged user listing for a revalidation sweep.
+func (st *Store) UserPages() []doppler.Page[doppler.WorkplaceUser] {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	return st.snap.UserPages
+}
+
+// SetUsers replaces the workplace user listing.
+func (st *Store) SetUsers(pages []doppler.Page[doppler.WorkplaceUser]) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.snap.UserPages = pages
+	st.dirty = true
+}
+
+// Groups returns the workplace's groups, for resolving group members.
+func (st *Store) Groups() []doppler.Group {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	out := make([]doppler.Group, len(st.snap.Groups))
+	copy(out, st.snap.Groups)
+	return out
+}
+
+// GroupETag returns the ETag that revalidates the group listing.
+func (st *Store) GroupETag() string {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	return st.snap.GroupETag
+}
+
+// SetGroups records the workplace's groups.
+func (st *Store) SetGroups(groups []doppler.Group, etag string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if groups != nil {
+		st.snap.Groups = groups
+	}
+	if etag != "" {
+		st.snap.GroupETag = etag
+	}
+	st.dirty = true
+}
+
+// Roles returns the project roles the workplace defines.
+func (st *Store) Roles() []doppler.ProjectRole {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	out := make([]doppler.ProjectRole, len(st.snap.Roles))
+	copy(out, st.snap.Roles)
+	return out
+}
+
+// RoleETag returns the ETag that revalidates the role listing.
+func (st *Store) RoleETag() string {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	return st.snap.RoleETag
+}
+
+// SetRoles records the project roles.
+func (st *Store) SetRoles(roles []doppler.ProjectRole, etag string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if roles != nil {
+		st.snap.Roles = roles
+	}
+	if etag != "" {
+		st.snap.RoleETag = etag
+	}
 	st.dirty = true
 }
 

@@ -28,6 +28,9 @@ func (m *Model) View() string {
 	}
 
 	body := m.cur().render(m.st, m.gl, m.width, m.bodyHeight(), true)
+	if m.roleFor != "" {
+		body = m.rolePickerView()
+	}
 
 	// The list is padded to its own height before the detail pane is appended,
 	// so the pane sits on the same rows whether the list is full or a filter
@@ -93,6 +96,9 @@ func (m *Model) headerView() string {
 	if m.curConfig != "" && m.screen == screenSecrets {
 		crumbs = append(crumbs, m.envStyle(m.curEnv).Render(m.curConfig))
 	}
+	if m.screen == screenMembers {
+		crumbs = append(crumbs, m.st.info.Render("access"))
+	}
 	left := strings.Join(crumbs, m.st.dim.Render(" / "))
 
 	right := m.st.dim.Render(m.cacheLabel())
@@ -142,6 +148,10 @@ func (m *Model) statusView() string {
 
 	var left string
 	switch {
+	case m.confirm != nil:
+		left = m.st.warn.Render(m.confirm.prompt + "  [y/N]")
+	case m.roleFor != "":
+		left = m.st.info.Render("role for " + m.roleFor)
 	case m.filtering:
 		left = m.st.filter.Render("/"+l.filter) + m.st.accent.Render("▌")
 	case l.filter != "":
@@ -171,10 +181,16 @@ func (m *Model) footerView() string {
 		// The chord is open: the footer stops advertising everything else and
 		// shows only what can come next, so the prefix is never a dead end.
 		hints = []string{"yc copy name", "yv copy value", "esc cancel"}
+	case m.confirm != nil:
+		hints = []string{"y confirm", "any other key cancels"}
+	case m.roleFor != "":
+		hints = []string{"enter apply", "↑↓ move", "esc cancel"}
+	case m.screen == screenMembers:
+		hints = []string{"enter role", "x revoke", "esc back", "/ filter", "r refresh", "? help"}
 	case m.screen == screenProjects:
-		hints = []string{"enter open", "/ filter", "o browser", "r refresh", "yc copy", "? help", "q quit"}
+		hints = []string{"enter open", "m access", "/ filter", "o browser", "r refresh", "yc copy", "? help"}
 	case m.screen == screenConfigs:
-		hints = []string{"enter open", "esc back", "/ filter", "o browser", "yc copy", "r refresh", "? help"}
+		hints = []string{"enter open", "esc back", "m access", "/ filter", "o browser", "yc copy", "? help"}
 	case m.screen == screenSecrets:
 		hints = []string{"s reveal", "S reveal all", "yc name", "yv value", "enter detail", "esc back", "? help"}
 	}
@@ -264,6 +280,24 @@ func (m *Model) secretDetail(body string) string {
 	return body + "\n" + sep + "\n" + strings.Join(lines, "\n")
 }
 
+// ---- role picker ----------------------------------------------------------
+
+// rolePickerView draws the role list in place of the member list. It replaces
+// rather than overlays because the two are the same shape, and a floating box
+// over a list of names is harder to read than the list it is choosing from.
+func (m *Model) rolePickerView() string {
+	head := m.st.header.Render("role for " + m.roleFor)
+	h := m.bodyHeight() - 1
+	if h < 1 {
+		h = 1
+	}
+	body := m.roles.render(m.st, m.gl, m.width, h, true)
+	if pad := h - (strings.Count(body, "\n") + 1); pad > 0 {
+		body += strings.Repeat("\n", pad)
+	}
+	return head + "\n" + body
+}
+
 // ---- help -----------------------------------------------------------------
 
 func (m *Model) helpView() string {
@@ -280,6 +314,8 @@ func (m *Model) helpView() string {
 		{"yc", "copy the name (project / config / secret)"},
 		{"yv", "copy the secret's value, fetching it if needed"},
 		{"o", "open the dashboard page in a browser"},
+		{"m", "who can access this project"},
+		{"enter / x", "on access: change role / revoke"},
 		{"?", "this help"},
 		{"q", "quit / leave help"},
 	}
