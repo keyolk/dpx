@@ -52,10 +52,31 @@ func (m *Model) View() string {
 func (m *Model) bodyHeight() int {
 	h := m.height - chrome
 	if m.screen == screenSecrets && m.detail != "" {
-		h -= detailHeight
+		h -= m.detailHeight()
 	}
 	if h < 1 {
 		return 1
+	}
+	return h
+}
+
+// detailHeight is how many rows the detail pane takes, separator included.
+//
+// It grows with the value so a long secret is readable in full, and stops at
+// half the screen so the list it belongs to never disappears. Below that it
+// stays at a floor rather than collapsing per-secret: a pane whose height
+// tracked every short value would shift the list on each cursor move.
+func (m *Model) detailHeight() int {
+	h := len(m.detailLines()) + 1 // separator
+	max := m.height / 2
+	if max < detailMin {
+		max = detailMin
+	}
+	if h > max {
+		h = max
+	}
+	if h < detailMin {
+		h = detailMin
 	}
 	return h
 }
@@ -151,7 +172,7 @@ func (m *Model) footerView() string {
 	case m.screen == screenConfigs:
 		hints = []string{"enter open", "esc back", "/ filter", "o browser", "y copy", "r refresh", "? help"}
 	case m.screen == screenSecrets:
-		hints = []string{"s reveal", "S reveal all", "y copy", "o browser", "enter detail", "esc back", "? help"}
+		hints = []string{"s reveal", "S reveal all", "y name", "Y value", "enter detail", "esc back", "o browser", "? help"}
 	}
 	// Hints are dropped from the right rather than truncated mid-word: half a
 	// keybinding is noise, and the list is already ordered by how often each
@@ -168,42 +189,72 @@ func (m *Model) footerView() string {
 
 // ---- secret detail --------------------------------------------------------
 
-// detailHeight is the fixed number of rows the detail pane occupies. Fixed,
-// because a pane that grows with its content shifts the list under the cursor.
-const detailHeight = 6
+// detailMin is the floor for the detail pane. Short values keep it here so the
+// list boundary does not jump as the cursor moves between secrets.
+const detailMin = 6
 
-func (m *Model) secretDetail(body string) string {
+// detailLabelW is the width of the "computed"/"raw"/"note" gutter.
+const detailLabelW = 9
+
+// detailLines renders the pane's content as one line per screen row, so the
+// caller can size the pane by counting them. Wrapping a long value into a
+// single string and then trimming by element — which is what a []string of
+// blocks invites — is how a value that wraps to five rows silently overflows
+// the layout it was measured for.
+func (m *Model) detailLines() []string {
 	name := m.detail
-	var lines []string
-	lines = append(lines, m.st.header.Render(name))
+	w := m.width - detailLabelW
+	if w < 20 {
+		w = 20
+	}
+
+	lines := []string{m.st.header.Render(name)}
+	field := func(label string, style lipgloss.Style, text string) {
+		for i, l := range strings.Split(wrapCells(text, w, 0), "\n") {
+			gutter := label
+			if i > 0 {
+				gutter = ""
+			}
+			lines = append(lines, m.st.dim.Render(padRight(gutter, detailLabelW))+style.Render(l))
+		}
+	}
 
 	s, ok := m.revealed[name]
 	switch {
 	case !ok:
-		lines = append(lines, m.st.dim.Render("value not fetched  ·  press s to reveal"))
+		lines = append(lines, m.st.dim.Render("value not fetched  "+m.gl.bullet+"  press s to reveal"))
 	case s.Restricted():
 		// A restricted secret returns an empty string, not an error; saying
 		// "restricted" is the difference between that and an empty value.
 		lines = append(lines, m.st.warn.Render("restricted — this token may not read the value"))
 	default:
-		lines = append(lines, m.st.dim.Render("computed ")+wrapCells(s.Computed, m.width-10, 1))
+		field("computed", m.st.success, s.Computed)
 		if s.Referenced() {
 			// The stored form differs from the computed one, meaning the value
 			// is assembled from references. Showing only the result hides
 			// where it actually comes from.
-			lines = append(lines, m.st.dim.Render("raw      ")+m.st.info.Render(wrapCells(s.Raw, m.width-10, 1)))
+			field("raw", m.st.info, s.Raw)
 		}
 	}
 	if ok && s.Note != "" {
-		lines = append(lines, m.st.dim.Render("note     ")+truncCells(s.Note, m.width-10))
+		field("note", m.st.dim, s.Note)
 	}
+	return lines
+}
 
-	// Pad to the fixed height so the boundary between list and detail is
-	// stable regardless of what the secret contains.
-	for len(lines) < detailHeight-1 {
+func (m *Model) secretDetail(body string) string {
+	lines := m.detailLines()
+	h := m.detailHeight() - 1 // the separator is not one of these rows
+
+	if len(lines) > h {
+		// The value is longer than the pane can hold; say so rather than
+		// ending mid-value as if that were all of it. `y` copies it whole.
+		lines = lines[:h]
+		lines[h-1] = m.st.dim.Render("… value continues  " + m.gl.bullet + "  press y to copy it in full")
+	}
+	for len(lines) < h {
 		lines = append(lines, "")
 	}
-	lines = lines[:detailHeight-1]
 
 	sep := m.st.dim.Render(strings.Repeat("─", m.width))
 	return body + "\n" + sep + "\n" + strings.Join(lines, "\n")
@@ -222,7 +273,8 @@ func (m *Model) helpView() string {
 		{"r", "revalidate the current level"},
 		{"s", "reveal the selected secret's value"},
 		{"S", "reveal every value in the config"},
-		{"y", "copy the selected item"},
+		{"y", "copy the name (project / config / secret)"},
+		{"Y", "copy the secret's value, fetching it if needed"},
 		{"o", "open the dashboard page in a browser"},
 		{"?", "this help"},
 		{"q", "quit / leave help"},
@@ -276,26 +328,6 @@ func (m *Model) wrapErr() string {
 	}
 	return m.st.err.Render("error") + "\n" + wrapCells(m.errText, w, 0) + "\n\n" +
 		m.st.dim.Render("any key dismisses")
-}
-
-// truncCells cuts a string to n display cells, appending an ellipsis. It is
-// for plain text only — styled strings carry ANSI that a cell cut would split.
-func truncCells(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	if lipgloss.Width(s) <= n {
-		return s
-	}
-	w := 0
-	for i, r := range s {
-		rw := lipgloss.Width(string(r))
-		if w+rw > n-1 {
-			return s[:i] + "…"
-		}
-		w += rw
-	}
-	return s
 }
 
 // truncStyled cuts an already-styled string by cell width, leaving the ANSI

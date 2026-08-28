@@ -69,6 +69,9 @@ type Model struct {
 	revealAll bool
 	// detail is the secret currently expanded in the detail pane.
 	detail string
+	// pendingCopy is a secret whose value was asked for by `Y` before it had
+	// been fetched; the reveal that follows completes the copy.
+	pendingCopy string
 
 	filtering bool
 	// inflight counts background fetches, so the spinner runs while any is
@@ -191,18 +194,17 @@ func (m *Model) rebuildProjects() {
 	projects := m.app.Store.Projects()
 	rows := make([]row, 0, len(projects))
 	for _, p := range projects {
-		meta := ""
+		var meta []cell
+		if p.Description != "" {
+			meta = append(meta, cell{text: p.Description, style: m.st.dim})
+		}
 		if e := m.app.Store.Entry(p.Name); e.Loaded() {
 			// Only a walked project can report its config count; showing a
 			// blank rather than 0 keeps "not looked at yet" distinct from
 			// "genuinely has none".
-			meta = m.st.dim.Render(fmt.Sprintf("%d cfg", len(e.Configs)))
+			meta = append(meta, cell{text: fmt.Sprintf("%d cfg", len(e.Configs)), style: m.st.dim})
 		}
-		desc := p.Description
-		if desc != "" {
-			meta = m.st.dim.Render(truncCells(desc, 40)) + "  " + meta
-		}
-		rows = append(rows, row{label: p.Name, meta: strings.TrimSpace(meta)})
+		rows = append(rows, row{label: p.Name, meta: meta})
 	}
 	m.projects.setRows(rows)
 }
@@ -216,12 +218,12 @@ func (m *Model) rebuildConfigs() {
 
 	rows := make([]row, 0, len(cfgs))
 	for _, c := range cfgs {
-		var parts []string
+		var meta []cell
 		if c.Root {
-			parts = append(parts, m.st.dim.Render("root"))
+			meta = append(meta, cell{text: "root", style: m.st.dim})
 		}
 		if c.Locked {
-			parts = append(parts, m.st.warn.Render(m.gl.lock))
+			meta = append(meta, cell{text: m.gl.lock, style: m.st.warn})
 		}
 		if c.Inheriting && len(c.Inherits) > 0 {
 			// An inheriting config's secrets come from elsewhere; without this
@@ -230,16 +232,16 @@ func (m *Model) rebuildConfigs() {
 			for _, in := range c.Inherits {
 				from = append(from, in.Config)
 			}
-			parts = append(parts, m.st.info.Render(m.gl.arrow+" "+strings.Join(from, ",")))
+			meta = append(meta, cell{text: m.gl.arrow + " " + strings.Join(from, ","), style: m.st.info})
 		}
 		if sn := m.app.Store.SecretNames(m.curProject, c.Name); sn != nil {
-			parts = append(parts, m.st.dim.Render(fmt.Sprintf("%d", len(sn.Names))))
+			meta = append(meta, cell{text: fmt.Sprintf("%d", len(sn.Names)), style: m.st.dim})
 		}
 		rows = append(rows, row{
 			label:    c.Name,
 			tag:      c.Environment,
 			tagStyle: m.envStyle(c.Environment),
-			meta:     strings.Join(parts, " "),
+			meta:     meta,
 		})
 	}
 	m.configs.setRows(rows)
@@ -270,25 +272,28 @@ func (m *Model) rebuildSecrets() {
 
 	rows := make([]row, 0, len(names))
 	for _, n := range names {
-		meta := ""
+		var meta []cell
 		// A fetched value is only shown for the secret that was asked about,
 		// unless the whole config was revealed. One request brings every
 		// value, but showing all of them because someone asked about one would
 		// put the rest of the config on screen unasked.
 		shown := m.revealAll || n == m.detail
 		if s, ok := m.revealed[n]; ok && shown {
+			// The value is handed over whole; the renderer clips it to
+			// whatever the terminal actually has. A value pre-cut to a fixed
+			// budget here would stay cut on a 200-column screen.
 			switch {
 			case s.Restricted():
-				meta = m.st.warn.Render("restricted")
+				meta = []cell{{text: "restricted", style: m.st.warn}}
 			case s.Referenced():
 				// The stored value is a reference; showing the computed form
 				// alone would hide that fact.
-				meta = m.st.info.Render(truncCells(s.Computed, 48))
+				meta = []cell{{text: s.Computed, style: m.st.info}}
 			default:
-				meta = m.st.success.Render(truncCells(s.Computed, 48))
+				meta = []cell{{text: s.Computed, style: m.st.success}}
 			}
 		} else if isDopplerMeta(n) {
-			meta = m.st.dim.Render("doppler")
+			meta = []cell{{text: "doppler", style: m.st.dim}}
 		}
 		rows = append(rows, row{label: n, meta: meta, dimmed: isDopplerMeta(n)})
 	}

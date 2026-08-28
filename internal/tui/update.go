@@ -67,18 +67,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case revealMsg:
 		m.inflight--
 		if msg.err != nil {
+			m.pendingCopy = ""
 			m.fail(msg.err)
 			return m, nil
 		}
 		// A reveal that lands after the user navigated away is dropped rather
 		// than shown: it belongs to a config that is no longer on screen.
 		if msg.project != m.curProject || msg.config != m.curConfig {
+			m.pendingCopy = ""
 			return m, nil
 		}
 		for _, s := range msg.secrets {
 			m.revealed[s.Name] = s
 		}
 		m.rebuildSecrets()
+		if m.pendingCopy != "" {
+			return m, m.finishPendingCopy()
+		}
 		m.note(fmt.Sprintf("revealed %d values", len(msg.secrets)))
 		return m, nil
 
@@ -152,6 +157,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "y":
 		return m.copyCurrent()
+	case "Y":
+		return m.copyValue()
 	case "o":
 		return m.openInBrowser()
 	}
@@ -246,6 +253,7 @@ func (m *Model) forward() (tea.Model, tea.Cmd) {
 		m.revealed = map[string]doppler.Secret{}
 		m.revealAll = false
 		m.detail = ""
+		m.pendingCopy = ""
 		m.rebuildSecrets()
 		return m, m.loadSecretNamesCmd(m.curProject, m.curConfig)
 	case screenSecrets:
@@ -268,6 +276,7 @@ func (m *Model) back() (tea.Model, tea.Cmd) {
 		m.revealed = map[string]doppler.Secret{}
 		m.revealAll = false
 		m.detail = ""
+		m.pendingCopy = ""
 		m.rebuildConfigs()
 	case screenConfigs:
 		m.screen = screenProjects

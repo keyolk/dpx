@@ -67,7 +67,7 @@ export DB_PASSWORD=$(dpx get my-project prd DB_PASSWORD)
 | `/` | fzf-style filter |
 | `r` | revalidate the current level |
 | `s` / `S` | reveal the selected value / the whole config |
-| `y` | copy (name, or value when revealed) |
+| `y` / `Y` | copy the name / the secret's value (fetched if needed) |
 | `o` | open the dashboard page for whatever the cursor is on |
 | `?` | help |
 | `q` | quit |
