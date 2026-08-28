@@ -67,20 +67,48 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case revealMsg:
 		m.inflight--
 		if msg.err != nil {
+			m.pendingCopy = ""
 			m.fail(msg.err)
 			return m, nil
 		}
 		// A reveal that lands after the user navigated away is dropped rather
 		// than shown: it belongs to a config that is no longer on screen.
 		if msg.project != m.curProject || msg.config != m.curConfig {
+			m.pendingCopy = ""
 			return m, nil
 		}
 		for _, s := range msg.secrets {
 			m.revealed[s.Name] = s
 		}
 		m.rebuildSecrets()
+		if m.pendingCopy != "" {
+			return m, m.finishPendingCopy()
+		}
 		m.note(fmt.Sprintf("revealed %d values", len(msg.secrets)))
 		return m, nil
+
+	case membersMsg:
+		m.inflight--
+		delete(m.loading, "members\x00"+msg.project)
+		if msg.err != nil {
+			m.fail(msg.err)
+			return m, nil
+		}
+		if m.screen == screenMembers && msg.project == m.curProject {
+			m.rebuildMembers()
+		}
+		return m, nil
+
+	case memberWriteMsg:
+		m.inflight--
+		if msg.err != nil {
+			m.fail(msg.err)
+			// The cache was invalidated before the write was known to fail, so
+			// refetch either way rather than leaving the screen empty.
+			return m, m.loadMembersCmd(msg.project)
+		}
+		m.note(msg.verb)
+		return m, m.loadMembersCmd(msg.project)
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -103,7 +131,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Any key dismisses the error overlay; it is informational, not a
 		// prompt, and trapping the user in it would be worse than losing it.
 		m.errText = ""
+		m.pendingKey = ""
 		return m, nil
+	}
+	if m.confirm != nil {
+		return m.handleConfirmKey(msg)
+	}
+	if m.roleFor != "" {
+		return m.handleRoleKey(msg)
+	}
+	if m.pendingKey != "" {
+		return m.handleChordKey(msg)
 	}
 
 	switch msg.String() {
@@ -151,10 +189,84 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "y":
-		return m.copyCurrent()
+		// `y` alone does nothing: it opens a chord that names what to copy.
+		// A bare copy key that guesses between a variable name and a secret
+		// value is how a token lands in the wrong paste.
+		m.pendingKey = "y"
+		return m, nil
 	case "o":
 		return m.openInBrowser()
+	case "m":
+		if m.screen == screenProjects || m.screen == screenConfigs {
+			return m.openMembers()
+		}
+		return m, nil
+	case "R":
+		if m.screen == screenMembers {
+			return m.openRolePicker()
+		}
+		return m, nil
+	case "x":
+		if m.screen == screenMembers {
+			return m.askRemoveMember()
+		}
+		return m, nil
 	}
+	return m, nil
+}
+
+// handleConfirmKey answers a staged destructive action. Only an explicit "y"
+// proceeds; every other key cancels, so a confirmation cannot be dismissed
+// into an accidental yes.
+func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	c := m.confirm
+	m.confirm = nil
+	if msg.String() == "y" {
+		return m, c.run()
+	}
+	m.note("cancelled")
+	return m, nil
+}
+
+// handleRoleKey drives the role picker, which is a list overlaid on the member
+// screen rather than a fourth level of the drill-down stack.
+func (m *Model) handleRoleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.roleFor = ""
+		return m, nil
+	case "enter", "l", "right":
+		return m.applyRole()
+	case "j", "down":
+		m.roles.move(1, m.bodyHeight())
+	case "k", "up":
+		m.roles.move(-1, m.bodyHeight())
+	case "g", "home":
+		m.roles.top_(m.bodyHeight())
+	case "G", "end":
+		m.roles.bottom(m.bodyHeight())
+	}
+	return m, nil
+}
+
+// handleChordKey resolves the second key of a chord. Anything unrecognized
+// cancels rather than falling through to a top-level binding — a stray key
+// after `y` must not scroll the list or quit.
+func (m *Model) handleChordKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	prefix := m.pendingKey
+	m.pendingKey = ""
+	if prefix != "y" {
+		return m, nil
+	}
+	switch msg.String() {
+	case "c":
+		return m.copyCurrent()
+	case "v":
+		return m.copyValue()
+	case "esc":
+		return m, nil
+	}
+	m.note("y" + msg.String() + " is not a copy target — yc name, yv value")
 	return m, nil
 }
 
@@ -217,6 +329,8 @@ func (m *Model) cur() *list {
 		return &m.configs
 	case screenSecrets:
 		return &m.secrets
+	case screenMembers:
+		return &m.members
 	default:
 		return &m.projects
 	}
@@ -246,8 +360,13 @@ func (m *Model) forward() (tea.Model, tea.Cmd) {
 		m.revealed = map[string]doppler.Secret{}
 		m.revealAll = false
 		m.detail = ""
+		m.pendingCopy = ""
 		m.rebuildSecrets()
 		return m, m.loadSecretNamesCmd(m.curProject, m.curConfig)
+	case screenMembers:
+		// Enter opens the role picker: on a list of grants, "open" means
+		// "change this one", and there is no level below a member.
+		return m.openRolePicker()
 	case screenSecrets:
 		// Enter on a secret toggles its detail pane rather than revealing it;
 		// revealing is a separate, deliberate key.
@@ -263,11 +382,23 @@ func (m *Model) forward() (tea.Model, tea.Cmd) {
 
 func (m *Model) back() (tea.Model, tea.Cmd) {
 	switch m.screen {
+	case screenMembers:
+		// The member list is opened from two levels, so it returns to the one
+		// it came from rather than to a fixed parent.
+		m.screen = m.memberBack
+		m.memberRows = nil
+		if m.screen == screenProjects {
+			m.curProject = ""
+			m.rebuildProjects()
+		} else {
+			m.rebuildConfigs()
+		}
 	case screenSecrets:
 		m.screen = screenConfigs
 		m.revealed = map[string]doppler.Secret{}
 		m.revealAll = false
 		m.detail = ""
+		m.pendingCopy = ""
 		m.rebuildConfigs()
 	case screenConfigs:
 		m.screen = screenProjects
@@ -309,6 +440,9 @@ func (m *Model) refreshCurrent() tea.Cmd {
 	case screenSecrets:
 		delete(m.loading, m.curProject+"\x00"+m.curConfig)
 		return m.loadSecretNamesCmd(m.curProject, m.curConfig)
+	case screenMembers:
+		delete(m.loading, "members\x00"+m.curProject)
+		return m.loadMembersCmd(m.curProject)
 	}
 	return nil
 }

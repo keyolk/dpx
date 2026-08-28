@@ -7,6 +7,7 @@
 package doppler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -116,6 +117,49 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, etag string
 		return Result{}, &APIError{Status: resp.StatusCode, Message: apiMessage(body), Path: path}
 	}
 	return Result{ETag: resp.Header.Get("ETag"), Body: body}, nil
+}
+
+// send issues a request with a JSON body and decodes nothing but errors. It
+// is the write counterpart to get: no ETag, no caching, since a mutation has
+// nothing to revalidate against.
+func (c *Client) send(ctx context.Context, method, path string, q url.Values, body any) error {
+	u := c.apiHost + path
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	var r io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		r = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, r)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(c.token, "")
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	c.observeRate(resp)
+
+	rb, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &APIError{Status: resp.StatusCode, Message: apiMessage(rb), Path: path}
+	}
+	return nil
 }
 
 func (c *Client) observeRate(resp *http.Response) {

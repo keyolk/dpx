@@ -100,12 +100,16 @@ func TestRenderRespectsCellWidth(t *testing.T) {
 	}
 }
 
-// The meta column is right-aligned against the terminal edge; a long label
-// must not push it past the edge.
+func metaOf(text string) []cell {
+	return []cell{{text: text, style: lipgloss.NewStyle()}}
+}
+
+// A label long enough to fill the row must not push the meta column past the
+// terminal edge.
 func TestRenderKeepsMetaInsideWidth(t *testing.T) {
 	st := newStyles()
 	var l list
-	l.setRows([]row{{label: strings.Repeat("x", 200), meta: "42 cfg"}})
+	l.setRows([]row{{label: strings.Repeat("x", 200), meta: metaOf("42 cfg")}})
 
 	const width = 40
 	out := l.render(st, asciiGlyphs, width, 1, true)
@@ -114,6 +118,85 @@ func TestRenderKeepsMetaInsideWidth(t *testing.T) {
 	}
 	if !strings.Contains(out, "42 cfg") {
 		t.Error("meta column was dropped rather than fitted")
+	}
+}
+
+// The whole point of the column layout: meta starts just past the longest
+// visible label, not flush against the terminal edge, so a short name and its
+// value read as a pair instead of sitting at opposite ends of a wide screen.
+func TestMetaColumnFollowsLongestLabelNotTerminalEdge(t *testing.T) {
+	st := newStyles()
+	var l list
+	l.setRows([]row{
+		{label: "DB_HOST", meta: metaOf("postgres.internal")},
+		{label: "PORT", meta: metaOf("5432")},
+	})
+
+	const width = 120
+	lines := strings.Split(l.render(st, asciiGlyphs, width, 2, true), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2", len(lines))
+	}
+
+	col := strings.Index(lines[0], "postgres.internal")
+	if col < 0 {
+		t.Fatal("value missing from the first row")
+	}
+	if col > 30 {
+		// "  DB_HOST" is 9 cells; anything near the far edge means the meta is
+		// still flush-right.
+		t.Errorf("meta starts at column %d on a %d-wide terminal; it should follow the label", col, width)
+	}
+	if got := strings.Index(lines[1], "5432"); got != col {
+		t.Errorf("meta columns disagree: %d vs %d — the column must be shared", got, col)
+	}
+}
+
+// A long value gets whatever the terminal has left, rather than a width the
+// row builder guessed. A 60-cell value must survive on a wide terminal.
+func TestLongValueUsesAvailableWidth(t *testing.T) {
+	st := newStyles()
+	value := strings.Repeat("k", 60)
+	var l list
+	l.setRows([]row{{label: "TOKEN", meta: metaOf(value)}})
+
+	out := l.render(st, asciiGlyphs, 120, 1, true)
+	if !strings.Contains(out, value) {
+		t.Errorf("60-cell value was clipped on a 120-cell terminal: %q", out)
+	}
+}
+
+// When the label column cannot be squeezed enough to leave a usable meta
+// column, the name wins — a value clipped to a few cells is worse than none.
+func TestNarrowTerminalDropsMetaRatherThanTheName(t *testing.T) {
+	st := newStyles()
+	var l list
+	l.setRows([]row{{label: "SOME_LONG_SECRET_NAME", meta: metaOf(strings.Repeat("v", 40))}})
+
+	const width = 26
+	out := l.render(st, asciiGlyphs, width, 1, true)
+	if w := lipgloss.Width(out); w > width {
+		t.Errorf("rendered width %d > %d: %q", w, width, out)
+	}
+	if !strings.Contains(out, "SOME_LONG") {
+		t.Errorf("the name was sacrificed to the value: %q", out)
+	}
+}
+
+// Rows without a tag still align with tagged ones; a mixed list that shifted
+// its labels by four cells per row would be unreadable.
+func TestUntaggedRowsAlignWithTaggedOnes(t *testing.T) {
+	st := newStyles()
+	var l list
+	l.setRows([]row{
+		{label: "prod", tag: "prd", tagStyle: lipgloss.NewStyle()},
+		{label: "misc"},
+	})
+
+	lines := strings.Split(l.render(st, asciiGlyphs, 60, 2, true), "\n")
+	a, b := strings.Index(lines[0], "prod"), strings.Index(lines[1], "misc")
+	if a != b {
+		t.Errorf("labels start at %d and %d; tagless rows must be padded to match", a, b)
 	}
 }
 

@@ -8,42 +8,92 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// copyCurrent puts the selected item on the clipboard.
+// copyCurrent puts the selected item's name on the clipboard.
 //
-// What gets copied depends on the level, and on the secrets screen it is the
-// value when one has been revealed — copying the name of a secret you just
-// revealed is never what was wanted, and copying a value that was never
-// fetched would be a silent empty paste.
+// The name and the value are separate chords rather than one key that
+// guesses: a copy key that returns a name on one row and a secret value on
+// the next — depending on whether that row happened to be revealed — is how a
+// token ends up in a paste that was meant to be a variable name.
 func (m *Model) copyCurrent() (tea.Model, tea.Cmd) {
 	r := m.cur().currentRow()
 	if r == nil {
 		return m, nil
 	}
-
-	var text, label string
+	var label string
 	switch m.screen {
 	case screenProjects:
-		text, label = r.label, "project name"
+		label = "project name"
 	case screenConfigs:
-		text, label = r.label, "config name"
-	case screenSecrets:
-		if s, ok := m.revealed[r.label]; ok && (m.revealAll || r.label == m.detail) {
-			text, label = s.Computed, "value of "+r.label
-		} else {
-			text, label = r.label, "secret name"
-		}
+		label = "config name"
+	default:
+		label = "secret name"
 	}
-	if text == "" {
-		return m, nil
-	}
+	return m, m.copy(r.label, label)
+}
 
-	if err := copyToClipboard(text); err != nil {
-		m.fail(fmt.Errorf("copy: %w", err))
+// copyValue puts the selected secret's value on the clipboard, fetching it
+// first when it has not been revealed. It copies the computed value in full,
+// independent of what the row or the detail pane had room to display.
+func (m *Model) copyValue() (tea.Model, tea.Cmd) {
+	if m.screen != screenSecrets {
 		return m, nil
+	}
+	r := m.cur().currentRow()
+	if r == nil {
+		return m, nil
+	}
+	if s, ok := m.revealed[r.label]; ok {
+		if s.Restricted() {
+			m.fail(fmt.Errorf("copy: %s is restricted — this token may not read its value", r.label))
+			return m, nil
+		}
+		return m, m.copy(s.Computed, "value of "+r.label)
+	}
+	// Not fetched yet: ask for it and finish the copy when it lands, rather
+	// than making the user press s and then yv.
+	m.pendingCopy = r.label
+	m.note("fetching " + r.label + " to copy")
+	return m, m.revealCmd(m.curProject, m.curConfig)
+}
+
+// finishPendingCopy completes a copy that was waiting on a reveal.
+func (m *Model) finishPendingCopy() tea.Cmd {
+	name := m.pendingCopy
+	m.pendingCopy = ""
+	if name == "" {
+		return nil
+	}
+	s, ok := m.revealed[name]
+	if !ok {
+		m.fail(fmt.Errorf("copy: %s was not returned by the reveal", name))
+		return nil
+	}
+	if s.Restricted() {
+		m.fail(fmt.Errorf("copy: %s is restricted — this token may not read its value", name))
+		return nil
+	}
+	return m.copy(s.Computed, "value of "+name)
+}
+
+// copy writes text to the clipboard and reports what happened. It returns a
+// tea.Cmd only for signature symmetry with the callers; the write itself is a
+// local pipe.
+func (m *Model) copy(text, label string) tea.Cmd {
+	if text == "" {
+		m.note(label + " is empty — nothing copied")
+		return nil
+	}
+	if err := clipboardWrite(text); err != nil {
+		m.fail(fmt.Errorf("copy: %w", err))
+		return nil
 	}
 	m.note("copied " + label)
-	return m, nil
+	return nil
 }
+
+// clipboardWrite is the indirection the tests replace; production always runs
+// copyToClipboard.
+var clipboardWrite = copyToClipboard
 
 // copyToClipboard shells out to the platform's clipboard tool.
 //

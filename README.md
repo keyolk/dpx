@@ -67,10 +67,23 @@ export DB_PASSWORD=$(dpx get my-project prd DB_PASSWORD)
 | `/` | fzf-style filter |
 | `r` | revalidate the current level |
 | `s` / `S` | reveal the selected value / the whole config |
-| `y` | copy (name, or value when revealed) |
+| `yc` / `yv` | copy the name / the secret's value (fetched if needed) |
+| `m` | who can access this project |
+| `enter` / `x` | on access: change role / revoke |
 | `o` | open the dashboard page for whatever the cursor is on |
 | `?` | help |
 | `q` | quit |
+
+## Access control
+
+`m` on a project shows who can reach it — people and groups alike, with the
+role each holds and which environments the grant covers. Group rows are marked,
+because revoking one takes access from everyone in it.
+
+`enter` opens the role picker, listing the roles the workplace actually
+defines including custom ones; `x` revokes. Both are confirmed before they
+run, as is any promotion to `admin` or `owner` — the changes that grant the
+most are the easiest to make by accident from a list.
 
 ## Opening the dashboard
 

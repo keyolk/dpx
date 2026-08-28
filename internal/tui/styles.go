@@ -75,18 +75,19 @@ type glyphSet struct {
 	fail     string
 	ellipsis string
 	arrow    string
+	group    string
 	spinner  []string
 }
 
 var unicodeGlyphs = glyphSet{
 	cursor: "▸", bullet: "·", lock: "🔒", ok: "✓", fail: "✗",
-	ellipsis: "…", arrow: "→",
+	ellipsis: "…", arrow: "→", group: "◆",
 	spinner: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
 }
 
 var asciiGlyphs = glyphSet{
 	cursor: ">", bullet: "-", lock: "[L]", ok: "ok", fail: "!!",
-	ellipsis: "...", arrow: "->",
+	ellipsis: "...", arrow: "->", group: "[g]",
 	spinner: []string{"|", "/", "-", "\\"},
 }
 

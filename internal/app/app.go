@@ -187,6 +187,78 @@ func (c *Context) LoadSecretNames(ctx context.Context, project, config string) e
 	return nil
 }
 
+// LoadMembers revalidates a project's access list, together with the
+// workplace users and project roles it is rendered against.
+//
+// They are fetched as one operation because a member list alone is a page of
+// UUIDs: names come from the user and group listings and the role labels from
+// the role listing, and a screen missing any of them is not worth painting.
+// All are conditional, so a repeat visit costs a handful of 304s.
+func (c *Context) LoadMembers(ctx context.Context, project string) error {
+	members, etag, unchanged, err := c.Client.ProjectMembers(ctx, project, c.Store.MemberETag(project))
+	if err != nil {
+		return err
+	}
+	if unchanged {
+		members = nil
+	}
+	c.Store.SetMembers(project, members, etag)
+
+	// The user listing is workplace-wide and shared by every project, so it is
+	// only walked when it has never been fetched; a stale name is corrected by
+	// an explicit refresh rather than on every project visit.
+	if len(c.Store.UserPages()) == 0 {
+		pages, err := c.Client.WorkplaceUsers(ctx, nil)
+		if err != nil {
+			return err
+		}
+		c.Store.SetUsers(pages)
+	}
+
+	groups, groupETag, groupUnchanged, err := c.Client.WorkplaceGroups(ctx, c.Store.GroupETag())
+	if err != nil {
+		return err
+	}
+	if groupUnchanged {
+		groups = nil
+	}
+	c.Store.SetGroups(groups, groupETag)
+
+	roles, roleETag, roleUnchanged, err := c.Client.ProjectRoles(ctx, c.Store.RoleETag())
+	if err != nil {
+		return err
+	}
+	if roleUnchanged {
+		roles = nil
+	}
+	c.Store.SetRoles(roles, roleETag)
+
+	c.persist()
+	return nil
+}
+
+// SetMemberRole changes a member's project role and drops the cached list, so
+// the refetch that follows shows what the API actually stored rather than
+// what dpx assumed it would store.
+func (c *Context) SetMemberRole(ctx context.Context, project string, m doppler.Member, role string) error {
+	if err := c.Client.SetMemberRole(ctx, project, m, role); err != nil {
+		return err
+	}
+	c.Store.InvalidateMembers(project)
+	c.persist()
+	return nil
+}
+
+// RemoveMember revokes a member's access to a project.
+func (c *Context) RemoveMember(ctx context.Context, project string, m doppler.Member) error {
+	if err := c.Client.RemoveMember(ctx, project, m); err != nil {
+		return err
+	}
+	c.Store.InvalidateMembers(project)
+	c.persist()
+	return nil
+}
+
 // RevealSecrets fetches values for one config. The result is deliberately not
 // cached: a values file on disk is a credential store, and dpx is a browser.
 func (c *Context) RevealSecrets(ctx context.Context, project, config string) ([]doppler.Secret, error) {
