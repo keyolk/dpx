@@ -167,12 +167,16 @@ func (m *Model) footerView() string {
 	switch {
 	case m.filtering:
 		hints = []string{"type to filter", "↑↓ move", "enter accept", "esc clear"}
+	case m.pendingKey == "y":
+		// The chord is open: the footer stops advertising everything else and
+		// shows only what can come next, so the prefix is never a dead end.
+		hints = []string{"yc copy name", "yv copy value", "esc cancel"}
 	case m.screen == screenProjects:
-		hints = []string{"enter open", "/ filter", "o browser", "r refresh", "y copy", "? help", "q quit"}
+		hints = []string{"enter open", "/ filter", "o browser", "r refresh", "yc copy", "? help", "q quit"}
 	case m.screen == screenConfigs:
-		hints = []string{"enter open", "esc back", "/ filter", "o browser", "y copy", "r refresh", "? help"}
+		hints = []string{"enter open", "esc back", "/ filter", "o browser", "yc copy", "r refresh", "? help"}
 	case m.screen == screenSecrets:
-		hints = []string{"s reveal", "S reveal all", "y name", "Y value", "enter detail", "esc back", "o browser", "? help"}
+		hints = []string{"s reveal", "S reveal all", "yc name", "yv value", "enter detail", "esc back", "? help"}
 	}
 	// Hints are dropped from the right rather than truncated mid-word: half a
 	// keybinding is noise, and the list is already ordered by how often each
@@ -250,7 +254,7 @@ func (m *Model) secretDetail(body string) string {
 		// The value is longer than the pane can hold; say so rather than
 		// ending mid-value as if that were all of it. `y` copies it whole.
 		lines = lines[:h]
-		lines[h-1] = m.st.dim.Render("… value continues  " + m.gl.bullet + "  press y to copy it in full")
+		lines[h-1] = m.st.dim.Render("… value continues  " + m.gl.bullet + "  press yv to copy it in full")
 	}
 	for len(lines) < h {
 		lines = append(lines, "")
@@ -273,8 +277,8 @@ func (m *Model) helpView() string {
 		{"r", "revalidate the current level"},
 		{"s", "reveal the selected secret's value"},
 		{"S", "reveal every value in the config"},
-		{"y", "copy the name (project / config / secret)"},
-		{"Y", "copy the secret's value, fetching it if needed"},
+		{"yc", "copy the name (project / config / secret)"},
+		{"yv", "copy the secret's value, fetching it if needed"},
 		{"o", "open the dashboard page in a browser"},
 		{"?", "this help"},
 		{"q", "quit / leave help"},

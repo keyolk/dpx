@@ -69,9 +69,12 @@ type Model struct {
 	revealAll bool
 	// detail is the secret currently expanded in the detail pane.
 	detail string
-	// pendingCopy is a secret whose value was asked for by `Y` before it had
+	// pendingCopy is a secret whose value was asked for by `yv` before it had
 	// been fetched; the reveal that follows completes the copy.
 	pendingCopy string
+	// pendingKey is the first key of a chord awaiting its second, "" when no
+	// chord is open.
+	pendingKey string
 
 	filtering bool
 	// inflight counts background fetches, so the spinner runs while any is

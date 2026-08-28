@@ -3,6 +3,8 @@ package tui
 import (
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/keyolk/dpx/internal/doppler"
 )
 
@@ -129,4 +131,92 @@ func TestCopyValueIsANoOpOutsideSecrets(t *testing.T) {
 	if *got != "" {
 		t.Errorf("copied %q on the project screen", *got)
 	}
+}
+
+// `y` alone must not copy anything: it opens a chord. A prefix that also acted
+// on its own is the ambiguity the chord exists to remove.
+func TestYAloneOpensAChordWithoutCopying(t *testing.T) {
+	got := stubClipboard(t)
+	m := secretsModel(t, map[string]doppler.Secret{
+		"TOKEN": {Name: "TOKEN", Raw: "v", Computed: "v"},
+	}, "TOKEN")
+
+	m.handleKey(keyOf("y"))
+
+	if m.pendingKey != "y" {
+		t.Errorf("pendingKey = %q, want y", m.pendingKey)
+	}
+	if *got != "" {
+		t.Errorf("y alone copied %q", *got)
+	}
+}
+
+func TestChordYCCopiesNameAndYVCopiesValue(t *testing.T) {
+	for _, tc := range []struct{ second, want string }{
+		{"c", "TOKEN"},
+		{"v", "v"},
+	} {
+		got := stubClipboard(t)
+		m := secretsModel(t, map[string]doppler.Secret{
+			"TOKEN": {Name: "TOKEN", Raw: "v", Computed: "v"},
+		}, "TOKEN")
+
+		m.handleKey(keyOf("y"))
+		m.handleKey(keyOf(tc.second))
+
+		if *got != tc.want {
+			t.Errorf("y%s copied %q, want %q", tc.second, *got, tc.want)
+		}
+		if m.pendingKey != "" {
+			t.Errorf("y%s left the chord open", tc.second)
+		}
+	}
+}
+
+// A stray second key must cancel the chord, not fall through to the top-level
+// binding — `yq` must not quit and `yj` must not scroll.
+func TestUnknownChordKeyCancelsRatherThanFallingThrough(t *testing.T) {
+	got := stubClipboard(t)
+	m := secretsModel(t, map[string]doppler.Secret{}, "A", "B", "C")
+
+	m.handleKey(keyOf("y"))
+	_, cmd := m.handleKey(keyOf("j"))
+
+	if m.pendingKey != "" {
+		t.Error("the chord stayed open after an unknown key")
+	}
+	if m.secrets.cur != 0 {
+		t.Errorf("yj scrolled the list to %d; the chord must swallow it", m.secrets.cur)
+	}
+	if cmd != nil {
+		t.Error("an unknown chord key produced a command")
+	}
+	if *got != "" {
+		t.Errorf("an unknown chord key copied %q", *got)
+	}
+	if m.status == "" {
+		t.Error("an unknown chord key was swallowed with no explanation")
+	}
+}
+
+func TestEscCancelsTheChordSilently(t *testing.T) {
+	m := secretsModel(t, map[string]doppler.Secret{}, "A")
+
+	m.handleKey(keyOf("y"))
+	m.handleKey(keyOf("esc"))
+
+	if m.pendingKey != "" {
+		t.Error("esc left the chord open")
+	}
+	if m.screen != screenSecrets {
+		t.Error("esc inside a chord navigated back")
+	}
+}
+
+// keyOf builds the KeyMsg for a single key, matching what Bubble Tea delivers.
+func keyOf(s string) tea.KeyMsg {
+	if s == "esc" {
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	}
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }

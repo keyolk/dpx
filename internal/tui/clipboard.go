@@ -10,10 +10,10 @@ import (
 
 // copyCurrent puts the selected item's name on the clipboard.
 //
-// The name and the value are separate keys rather than one key that guesses:
-// `y` copying a name on one row and a secret value on the next — depending on
-// whether that row happened to be revealed — is how a token ends up in a
-// paste that was meant to be a variable name.
+// The name and the value are separate chords rather than one key that
+// guesses: a copy key that returns a name on one row and a secret value on
+// the next — depending on whether that row happened to be revealed — is how a
+// token ends up in a paste that was meant to be a variable name.
 func (m *Model) copyCurrent() (tea.Model, tea.Cmd) {
 	r := m.cur().currentRow()
 	if r == nil {
@@ -50,7 +50,7 @@ func (m *Model) copyValue() (tea.Model, tea.Cmd) {
 		return m, m.copy(s.Computed, "value of "+r.label)
 	}
 	// Not fetched yet: ask for it and finish the copy when it lands, rather
-	// than making the user press s and then y.
+	// than making the user press s and then yv.
 	m.pendingCopy = r.label
 	m.note("fetching " + r.label + " to copy")
 	return m, m.revealCmd(m.curProject, m.curConfig)

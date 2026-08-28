@@ -108,7 +108,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Any key dismisses the error overlay; it is informational, not a
 		// prompt, and trapping the user in it would be worse than losing it.
 		m.errText = ""
+		m.pendingKey = ""
 		return m, nil
+	}
+	if m.pendingKey != "" {
+		return m.handleChordKey(msg)
 	}
 
 	switch msg.String() {
@@ -156,12 +160,35 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "y":
-		return m.copyCurrent()
-	case "Y":
-		return m.copyValue()
+		// `y` alone does nothing: it opens a chord that names what to copy.
+		// A bare copy key that guesses between a variable name and a secret
+		// value is how a token lands in the wrong paste.
+		m.pendingKey = "y"
+		return m, nil
 	case "o":
 		return m.openInBrowser()
 	}
+	return m, nil
+}
+
+// handleChordKey resolves the second key of a chord. Anything unrecognized
+// cancels rather than falling through to a top-level binding — a stray key
+// after `y` must not scroll the list or quit.
+func (m *Model) handleChordKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	prefix := m.pendingKey
+	m.pendingKey = ""
+	if prefix != "y" {
+		return m, nil
+	}
+	switch msg.String() {
+	case "c":
+		return m.copyCurrent()
+	case "v":
+		return m.copyValue()
+	case "esc":
+		return m, nil
+	}
+	m.note("y" + msg.String() + " is not a copy target — yc name, yv value")
 	return m, nil
 }
 
