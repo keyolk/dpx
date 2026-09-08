@@ -117,6 +117,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// ctrl+c quits from anywhere, ahead of the filter and every overlay. It was
+	// not bound at all, so the reflex that kills every other CLI did nothing
+	// here and the filter box had no exit but its own bindings.
+	if msg.Type == tea.KeyCtrlC {
+		return m, tea.Quit
+	}
+
+	// Under a Korean input source the shortcut keys arrive as jamo (`q` -> `ㅂ`).
+	// Rewrite them to the Latin key at the same physical position so shortcuts
+	// fire without switching the input source back. Skipped while the filter
+	// owns keys, where the jamo is the intended input.
+	if !m.filtering {
+		msg = normalizeCJKKey(msg)
+	}
+
 	if m.filtering {
 		return m.handleFilterKey(msg)
 	}

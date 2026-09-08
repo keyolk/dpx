@@ -318,6 +318,7 @@ func (m *Model) helpView() string {
 		{"enter / x", "on access: change role / revoke"},
 		{"?", "this help"},
 		{"q", "quit / leave help"},
+		{"ctrl+c", "quit from anywhere, including the filter"},
 	}
 	var b strings.Builder
 	b.WriteString(m.st.title.Render("dpx — Doppler browser") + "\n\n")
