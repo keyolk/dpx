@@ -1,13 +1,19 @@
 // Package config resolves how dpx talks to Doppler.
 //
-// There is nothing new to provision: the token comes from the same places the
-// official `doppler` CLI reads it from — $DOPPLER_TOKEN, or the scoped token
-// store in ~/.doppler/.doppler.yaml. A user already logged into the CLI can
-// run dpx with no setup at all.
+// Three sources, in order. First, a pass entry named in dpx's own config
+// (~/.config/dpx/config.yaml) — the token then lives only in the encrypted
+// store, with no plaintext copy in .doppler.yaml or a shell profile. It wins
+// over the environment on purpose: a shell that exports $DOPPLER_TOKEN
+// globally would otherwise make the configured entry dead code.
+//
+// Failing that, the same places the official `doppler` CLI reads from —
+// $DOPPLER_TOKEN, or the scoped token store in ~/.doppler/.doppler.yaml. A
+// user already logged into the CLI can run dpx with no setup at all.
 package config
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,10 +72,18 @@ func DefaultPath() string {
 	return filepath.Join(home, ".doppler", ".doppler.yaml")
 }
 
-// Load resolves a token for the given working directory. $DOPPLER_TOKEN wins,
-// matching the CLI's own precedence; otherwise the scoped store is consulted.
+// Load resolves a token for the given working directory. A pass entry named
+// in dpx's own config wins; then $DOPPLER_TOKEN, matching the CLI's own
+// precedence; otherwise the scoped store is consulted.
 func Load(path, workdir string) (Config, error) {
 	cfg := Config{APIHost: defaultAPIHost, DashboardHost: defaultDashboardHost}
+
+	switch passCfg, err := loadFromPass(workdir); {
+	case err == nil:
+		return passCfg, nil
+	case !errors.Is(err, errNoDpxConfig):
+		return cfg, err
+	}
 
 	if v := strings.TrimSpace(os.Getenv("DOPPLER_TOKEN")); v != "" {
 		cfg.Token = v
@@ -88,7 +102,7 @@ func Load(path, workdir string) (Config, error) {
 	}
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return cfg, fmt.Errorf("no Doppler token: set $DOPPLER_TOKEN or run `doppler login`")
+		return cfg, fmt.Errorf("no Doppler token: name a pass entry in %s, set $DOPPLER_TOKEN, or run `doppler login`", DpxConfigPath())
 	}
 	if err != nil {
 		return cfg, fmt.Errorf("read %s: %w", path, err)
@@ -101,7 +115,7 @@ func Load(path, workdir string) (Config, error) {
 
 	scope, entry, ok := longestScope(y, workdir)
 	if !ok || strings.TrimSpace(entry.Token) == "" {
-		return cfg, fmt.Errorf("no Doppler token in %s: run `doppler login`", path)
+		return cfg, fmt.Errorf("no Doppler token in %s: run `doppler login`, or name a pass entry in %s", path, DpxConfigPath())
 	}
 	cfg.Token = strings.TrimSpace(entry.Token)
 	cfg.Source = fmt.Sprintf("%s (scope %s)", path, scope)
@@ -117,12 +131,19 @@ func Load(path, workdir string) (Config, error) {
 // longestScope picks the scope whose path is the longest prefix of workdir,
 // which is how the Doppler CLI resolves a token for the current directory.
 func longestScope(y dopplerYAML, workdir string) (string, scopeEntry, bool) {
-	if len(y.Scoped) == 0 {
+	s, ok := longestMatch(keysOf(y.Scoped), workdir)
+	if !ok {
 		return "", scopeEntry{}, false
 	}
-	scopes := make([]string, 0, len(y.Scoped))
-	for k := range y.Scoped {
-		scopes = append(scopes, k)
+	return s, y.Scoped[s], true
+}
+
+// longestMatch returns the scope that is the longest path prefix of workdir.
+// It backs both .doppler.yaml's scopes and dpx's own, so a directory resolves
+// to the same scope in either file.
+func longestMatch(scopes []string, workdir string) (string, bool) {
+	if len(scopes) == 0 {
+		return "", false
 	}
 	// Longest first, so the most specific scope is tested before "/".
 	sort.Slice(scopes, func(i, j int) bool { return len(scopes[i]) > len(scopes[j]) })
@@ -130,10 +151,19 @@ func longestScope(y dopplerYAML, workdir string) (string, scopeEntry, bool) {
 	workdir = filepath.Clean(workdir)
 	for _, s := range scopes {
 		if s == "/" || withinScope(workdir, s) {
-			return s, y.Scoped[s], true
+			return s, true
 		}
 	}
-	return "", scopeEntry{}, false
+	return "", false
+}
+
+// keysOf collects a map's keys. Generic so both scope maps can use it.
+func keysOf[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 // withinScope reports whether dir is scope or lives under it. A string prefix

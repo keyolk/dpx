@@ -33,9 +33,11 @@ func newRootCmd() *cobra.Command {
 		Short: "Doppler project and secret browser",
 		Long: `dpx browses Doppler projects, configs and secrets from the terminal.
 
-Authentication comes from $DOPPLER_TOKEN or the token store the official
-doppler CLI writes to ~/.doppler/.doppler.yaml, so a machine already logged in
-needs no setup.
+Authentication comes from a pass entry named in ~/.config/dpx/config.yaml, or
+failing that from $DOPPLER_TOKEN or the token store the official doppler CLI
+writes to ~/.doppler/.doppler.yaml — so a machine already logged in needs no
+setup, and one that keeps its token in pass never writes it to disk in the
+clear.
 
 Listings are cached on disk and revalidated with ETags: a refresh that finds
 nothing changed transfers no data. Secret values are fetched on demand and are

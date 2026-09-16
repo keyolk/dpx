@@ -100,6 +100,10 @@ func openAt(t *testing.T, srv *httptest.Server, home string, opts Options) *Cont
 	t.Setenv("DOPPLER_API_HOST", srv.URL)
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	// dpx's own config outranks $DOPPLER_TOKEN, so it has to be redirected
+	// too — otherwise a developer with a pass entry configured would resolve a
+	// real token here while a clean CI resolves the test one.
+	t.Setenv("DPX_CONFIG_DIR", filepath.Join(home, "config"))
 	c, err := Open(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -246,6 +250,7 @@ func TestCacheOnlyWithoutCacheFails(t *testing.T) {
 	t.Setenv("DOPPLER_API_HOST", "http://127.0.0.1:1")
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("DPX_CONFIG_DIR", t.TempDir())
 
 	_, err := Open(context.Background(), Options{CacheOnly: true})
 	if err == nil {
