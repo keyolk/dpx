@@ -13,12 +13,43 @@ dpx open [project] [config]      # open the dashboard page in a browser
 
 ## Authentication
 
-`$DOPPLER_TOKEN`, or the token store the official `doppler` CLI writes to
-`~/.doppler/.doppler.yaml`. Scoped tokens are resolved by longest matching
-directory prefix, the same way the CLI does — a repo pinned to another
-workplace stays pinned under dpx too.
+Three sources, in order:
 
-Nothing new to provision: a machine already logged into `doppler` runs dpx as-is.
+1. A [`pass`](https://www.passwordstore.org/) entry named in `~/.config/dpx/config.yaml`.
+2. `$DOPPLER_TOKEN`.
+3. The token store the official `doppler` CLI writes to `~/.doppler/.doppler.yaml`.
+
+Nothing new to provision for 2 and 3: a machine already logged into `doppler`
+runs dpx as-is. Scoped tokens are resolved by longest matching directory
+prefix, the same way the CLI does — a repo pinned to another workplace stays
+pinned under dpx too.
+
+### Reading the token from `pass`
+
+```yaml
+# ~/.config/dpx/config.yaml
+pass-entry: sendbird/doppler.com/token/gavin.jeong
+
+# optional: a directory that belongs to another workplace
+scoped:
+    /Users/me/src/other-org: other-org/doppler/token
+
+# optional: a self-hosted instance
+# api-host: https://api.doppler.example
+# dashboard-host: https://dashboard.doppler.example
+```
+
+The token is read from the first line of the entry, so the usual
+password-plus-metadata layout works unchanged.
+
+This source is checked **before** `$DOPPLER_TOKEN` on purpose. A shell profile
+that exports `DOPPLER_TOKEN` globally would otherwise shadow the entry you
+configured, making it dead config. A named entry that cannot be read is an
+error rather than a fallback — browsing a different workplace than the one you
+pinned is worse than failing.
+
+`pass` runs attached to the terminal, so a locked GPG key prompts normally.
+Set `$DPX_PASS_BIN` to use a compatible binary under another name.
 
 ## Caching
 
