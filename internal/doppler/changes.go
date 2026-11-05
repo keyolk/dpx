@@ -164,3 +164,74 @@ func parseLog(body []byte) (ConfigLog, error) {
 	}
 	return env.Log, nil
 }
+
+// Label is the shortest name that identifies who made a change.
+func (u LogUser) Label() string {
+	switch {
+	case u.Email != "":
+		return u.Email
+	case u.Username != "":
+		return u.Username
+	case u.Name != "":
+		return u.Name
+	}
+	return "-"
+}
+
+// Inverse is what reverting a change of this kind does to the secret.
+func Inverse(kind string) string {
+	switch kind {
+	case "+":
+		return "-"
+	case "-":
+		return "+"
+	}
+	return kind
+}
+
+// Summary names the secrets an entry touched, each prefixed by its kind.
+func (l ConfigLog) Summary() string {
+	parts := make([]string, 0, len(l.Diff))
+	for _, d := range l.Diff {
+		parts = append(parts, d.Kind()+d.Name)
+	}
+	s := strings.Join(parts, " ")
+	if s == "" {
+		// No secret-level diff: a rename, a lock, an integration change. The
+		// API's own sentence is the only description there is.
+		s = l.Text
+	}
+	if l.Rollback {
+		s += "  (rollback)"
+	}
+	return s
+}
+
+// Touches reports whether the entry changed the named secret.
+func (l ConfigLog) Touches(name string) bool {
+	for _, d := range l.Diff {
+		if d.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// Redacted drops the values from an entry, keeping only which side existed —
+// enough to tell a creation from a change from a deletion.
+func (l ConfigLog) Redacted() ConfigLog {
+	hidden := ""
+	out := l
+	out.Diff = make([]LogDiff, len(l.Diff))
+	for i, d := range l.Diff {
+		r := LogDiff{Name: d.Name, AddedVis: d.AddedVis, RemovedVis: d.RemovedVis}
+		if d.Added != nil {
+			r.Added = &hidden
+		}
+		if d.Removed != nil {
+			r.Removed = &hidden
+		}
+		out.Diff[i] = r
+	}
+	return out
+}

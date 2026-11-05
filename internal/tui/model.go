@@ -33,6 +33,7 @@ const (
 	screenConfigs
 	screenSecrets
 	screenMembers
+	screenHistory
 	screenHelp
 )
 
@@ -90,6 +91,17 @@ type Model struct {
 	// memberRows binds each rendered member row back to its API record, which
 	// a role change needs and the row's label cannot carry.
 	memberRows []memberRow
+
+	// input is the open one-line editor, nil when none is.
+	input *input
+	// last is this session's most recent write, which `u` takes back.
+	last *lastWrite
+
+	// history is the change log of historyConfig, opened from historyBack.
+	history       list
+	historyLogs   []doppler.ConfigLog
+	historyConfig string
+	historyBack   screen
 
 	filtering bool
 	// inflight counts background fetches, so the spinner runs while any is
@@ -352,14 +364,23 @@ func (m *Model) fetchStyle(at time.Time) lipgloss.Style {
 // environment stays neutral — coloring all of them would make none of them
 // stand out.
 func (m *Model) envStyle(slug string) lipgloss.Style {
-	switch strings.ToLower(slug) {
-	case "prd", "prod", "production":
+	if isProd(slug) {
 		return m.st.warn
+	}
+	switch strings.ToLower(slug) {
 	case "stg", "staging":
 		return m.st.info
 	default:
 		return m.st.dim
 	}
+}
+
+func isProd(slug string) bool {
+	switch strings.ToLower(slug) {
+	case "prd", "prod", "production":
+		return true
+	}
+	return false
 }
 
 func (m *Model) rebuildSecrets() {

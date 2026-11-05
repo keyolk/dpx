@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -10,6 +9,9 @@ import (
 )
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if cmd, ok := m.handleEditMsg(msg); ok {
+		return m, cmd
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -127,13 +129,16 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Under a Korean input source the shortcut keys arrive as jamo (`q` -> `ㅂ`).
 	// Rewrite them to the Latin key at the same physical position so shortcuts
 	// fire without switching the input source back. Skipped while the filter
-	// owns keys, where the jamo is the intended input.
-	if !m.filtering {
+	// or the editor owns keys, where the jamo is the intended input.
+	if !m.filtering && m.input == nil {
 		msg = normalizeCJKKey(msg)
 	}
 
 	if m.filtering {
 		return m.handleFilterKey(msg)
+	}
+	if m.input != nil {
+		return m.handleInputKey(msg)
 	}
 	if m.screen == screenHelp {
 		// Help is a dead end by design: every key returns, which is what the
@@ -222,8 +227,28 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "x":
-		if m.screen == screenMembers {
+		switch m.screen {
+		case screenMembers:
 			return m.askRemoveMember()
+		case screenSecrets:
+			return m.askDelete()
+		}
+		return m, nil
+	case "e":
+		return m.beginEdit()
+	case "a":
+		return m.beginAdd()
+	case "u":
+		switch m.screen {
+		case screenSecrets:
+			return m.askUndo()
+		case screenHistory:
+			return m.askRollback()
+		}
+		return m, nil
+	case "H":
+		if m.screen == screenConfigs || m.screen == screenSecrets {
+			return m.openHistory()
 		}
 		return m, nil
 	}
@@ -285,58 +310,6 @@ func (m *Model) handleChordKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	l := m.cur()
-	switch msg.String() {
-	case "esc":
-		m.filtering = false
-		l.filter = ""
-		l.reFilter()
-		return m, nil
-	case "enter":
-		m.filtering = false
-		return m, nil
-	case "backspace":
-		if r := []rune(l.filter); len(r) > 0 {
-			l.filter = string(r[:len(r)-1])
-			l.reFilter()
-		}
-		return m, nil
-	case "ctrl+w":
-		l.filter = dropWord(l.filter)
-		l.reFilter()
-		return m, nil
-	case "up", "down":
-		// Arrows navigate without leaving the filter, so a match can be picked
-		// without retyping.
-		d := 1
-		if msg.String() == "up" {
-			d = -1
-		}
-		l.move(d, m.bodyHeight())
-		return m, nil
-	}
-	if msg.Type == tea.KeyRunes {
-		l.filter += string(msg.Runes)
-		l.reFilter()
-		return m, m.prefetch()
-	}
-	if msg.Type == tea.KeySpace {
-		l.filter += " "
-		l.reFilter()
-	}
-	return m, nil
-}
-
-// dropWord removes the trailing word, matching readline's ctrl+w.
-func dropWord(s string) string {
-	s = strings.TrimRight(s, " ")
-	if i := strings.LastIndexByte(s, ' '); i >= 0 {
-		return s[:i+1]
-	}
-	return ""
-}
-
 // cur returns the list belonging to the current screen.
 func (m *Model) cur() *list {
 	switch m.screen {
@@ -346,6 +319,8 @@ func (m *Model) cur() *list {
 		return &m.secrets
 	case screenMembers:
 		return &m.members
+	case screenHistory:
+		return &m.history
 	default:
 		return &m.projects
 	}
@@ -397,6 +372,14 @@ func (m *Model) forward() (tea.Model, tea.Cmd) {
 
 func (m *Model) back() (tea.Model, tea.Cmd) {
 	switch m.screen {
+	case screenHistory:
+		m.screen = m.historyBack
+		m.historyLogs = nil
+		if m.screen == screenSecrets {
+			m.rebuildSecrets()
+		} else {
+			m.rebuildConfigs()
+		}
 	case screenMembers:
 		// The member list is opened from two levels, so it returns to the one
 		// it came from rather than to a fixed parent.
@@ -458,6 +441,8 @@ func (m *Model) refreshCurrent() tea.Cmd {
 	case screenMembers:
 		delete(m.loading, "members\x00"+m.curProject)
 		return m.loadMembersCmd(m.curProject)
+	case screenHistory:
+		return m.historyCmd(m.curProject, m.historyConfig)
 	}
 	return nil
 }

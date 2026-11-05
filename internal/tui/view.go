@@ -99,6 +99,10 @@ func (m *Model) headerView() string {
 	if m.screen == screenMembers {
 		crumbs = append(crumbs, m.st.info.Render("access"))
 	}
+	if m.screen == screenHistory {
+		crumbs = append(crumbs, m.envStyle(m.envOf(m.historyConfig)).Render(m.historyConfig),
+			m.st.info.Render("history"))
+	}
 	left := strings.Join(crumbs, m.st.dim.Render(" / "))
 
 	right := m.st.dim.Render(m.cacheLabel())
@@ -148,6 +152,8 @@ func (m *Model) statusView() string {
 
 	var left string
 	switch {
+	case m.input != nil:
+		left = m.inputView()
 	case m.confirm != nil:
 		left = m.st.warn.Render(m.confirm.prompt + "  [y/N]")
 	case m.roleFor != "":
@@ -177,6 +183,10 @@ func (m *Model) footerView() string {
 	switch {
 	case m.filtering:
 		hints = []string{"type to filter", "↑↓ move", "enter accept", "esc clear"}
+	case m.input != nil && m.input.kind == inputValue:
+		hints = []string{"enter save", "tab show/hide", "ctrl+u clear", "esc cancel"}
+	case m.input != nil:
+		hints = []string{"enter next", "esc cancel"}
 	case m.pendingKey == "y":
 		// The chord is open: the footer stops advertising everything else and
 		// shows only what can come next, so the prefix is never a dead end.
@@ -190,9 +200,11 @@ func (m *Model) footerView() string {
 	case m.screen == screenProjects:
 		hints = []string{"enter open", "m access", "/ filter", "o browser", "r refresh", "yc copy", "? help"}
 	case m.screen == screenConfigs:
-		hints = []string{"enter open", "esc back", "m access", "/ filter", "o browser", "yc copy", "? help"}
+		hints = []string{"enter open", "esc back", "H history", "m access", "/ filter", "o browser", "yc copy", "? help"}
 	case m.screen == screenSecrets:
-		hints = []string{"s reveal", "S reveal all", "yc name", "yv value", "enter detail", "esc back", "? help"}
+		hints = []string{"s reveal", "e edit", "a add", "x delete", "u undo", "H history", "yv value", "esc back", "? help"}
+	case m.screen == screenHistory:
+		hints = []string{"u roll back", "yc copy id", "/ filter", "r refresh", "esc back", "? help"}
 	}
 	// Hints are dropped from the right rather than truncated mid-word: half a
 	// keybinding is noise, and the list is already ordered by how often each
@@ -316,6 +328,9 @@ func (m *Model) helpView() string {
 		{"o", "open the dashboard page in a browser"},
 		{"m", "who can access this project"},
 		{"enter / x", "on access: change role / revoke"},
+		{"e / a / x", "on secrets: edit / add / delete (confirmed)"},
+		{"u", "undo this session's last write; on history: roll back"},
+		{"H", "change history of the config"},
 		{"?", "this help"},
 		{"q", "quit / leave help"},
 		{"ctrl+c", "quit from anywhere, including the filter"},

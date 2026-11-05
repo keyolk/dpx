@@ -25,6 +25,13 @@ func (m *Model) copyCurrent() (tea.Model, tea.Cmd) {
 		label = "project name"
 	case screenConfigs:
 		label = "config name"
+	case screenHistory:
+		// A history row's label is a summary; the id is what a later
+		// `dpx history --log` or `dpx rollback` needs.
+		if l := m.currentLog(); l != nil {
+			return m, m.copy(l.ID, "log id")
+		}
+		return m, nil
 	default:
 		label = "secret name"
 	}

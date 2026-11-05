@@ -44,6 +44,8 @@ func (m *Model) browserTarget() (project, config string) {
 		return m.curProject, ""
 	case screenSecrets:
 		return m.curProject, m.curConfig
+	case screenHistory:
+		return m.curProject, m.historyConfig
 	}
 	return "", ""
 }
