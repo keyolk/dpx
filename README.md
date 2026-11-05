@@ -3,13 +3,21 @@
 Terminal browser for Doppler projects, configs and secrets.
 
 ```
-dpx                              # interactive browser
-dpx projects [filter]            # list projects
-dpx configs <project>            # list a project's configs
-dpx secrets <project> <config>   # list secret names
-dpx get <project> <config> <key> # print one value to stdout
-dpx open [project] [config]      # open the dashboard page in a browser
+dpx                                   # interactive browser
+dpx projects [filter]                 # list projects
+dpx configs <project>                 # list a project's configs
+dpx secrets <project>/<config>        # list secret names
+dpx get <project>/<config>/<key>      # print one value to stdout
+dpx set <project>/<config> K=V [K]... # create or update secrets
+dpx unset <project>/<config> K...     # delete secrets
+dpx history <project>/<config> [K]    # who changed what, newest first
+dpx rollback <project>/<config> <log> # revert one change
+dpx open [project] [config]           # open the dashboard page in a browser
 ```
+
+A reference is one slash-joined token, so it copies and pastes whole. The
+parts can also be given as separate arguments — `dpx get my-app prd KEY` is the
+same as `dpx get my-app/prd/KEY`.
 
 ## Authentication
 
@@ -87,6 +95,59 @@ mode 0600.
 ```sh
 export DB_PASSWORD=$(dpx get my-project prd DB_PASSWORD)
 ```
+
+## Editing
+
+```sh
+dpx set my-app/dev LOG_LEVEL=debug FEATURE_X=on
+pbpaste | dpx set my-app/prd DB_PASSWORD     # value from stdin
+dpx set my-app/prd TLS_KEY < key.pem
+dpx set my-app/prd API_KEY                   # hidden prompt on a terminal
+dpx unset my-app/dev OLD_FLAG LEGACY_URL
+```
+
+A bare `KEY` reads its value from stdin or a hidden prompt; prefer it for
+anything sensitive, since a `KEY=VALUE` in argv shows up in `ps` and in shell
+history. One trailing newline is dropped from piped input, and an empty read is
+refused — write `KEY=` to set an empty value on purpose.
+
+Every command is **one** Doppler change: all its assignments and deletions land
+as a single config log entry, and the entry's id is printed together with the
+command that undoes it:
+
+```
+my-app/prd
+  ~ DB_PASSWORD
+written as log Xa3k...
+undo: dpx rollback my-app/prd Xa3k...
+```
+
+Writes are guarded against lost updates. Each existing secret is updated only
+if it still holds the value dpx read just before, so an edit someone else made
+in the meantime fails the write instead of being overwritten. An existing
+secret keeps its visibility and value type. Assignments that would change
+nothing are skipped rather than logged. `-n`/`--dry-run` prints the plan
+without writing.
+
+## History and rollback
+
+```sh
+dpx history my-app/prd                      # last 20 changes, by secret name
+dpx history my-app/prd DB_PASSWORD          # only changes that touched it
+dpx history my-app/prd --log Xa3k... --values
+dpx rollback my-app/prd Xa3k... --dry-run
+```
+
+Each line names the secrets a change touched — `+` created, `~` changed, `-`
+deleted. Doppler's listing does not carry that, so history reads each entry's
+detail as well (8 at a time). With a key, it looks back through `--scan`
+entries (default 100).
+
+A log entry holds both the old and the new value. History therefore prints
+names only, and `--json` blanks the values too; `--log <id> --values` is the
+one way to see them.
+
+A rollback is itself a new log entry, so it can be undone the same way.
 
 ## Keys
 
