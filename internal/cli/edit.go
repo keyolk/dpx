@@ -13,7 +13,6 @@ import (
 	"github.com/spf13/cobra"
 
 	dpxapp "github.com/keyolk/dpx/internal/app"
-	"github.com/keyolk/dpx/internal/doppler"
 )
 
 func newSetCmd() *cobra.Command {
@@ -83,17 +82,10 @@ command brings all of them back.`,
 	return cmd
 }
 
-// assignment is one KEY=VALUE from the command line, with the value already
-// resolved from stdin or a prompt where it was not given inline.
-type assignment struct {
-	name  string
-	value string
-}
-
 // parseAssignments resolves every argument to a name and value.
-func parseAssignments(args []string, stdin *os.File) ([]assignment, error) {
+func parseAssignments(args []string, stdin *os.File) ([]dpxapp.Assignment, error) {
 	interactive := term.IsTerminal(stdin.Fd())
-	var out []assignment
+	var out []dpxapp.Assignment
 	seen := map[string]bool{}
 	stdinUsed := false
 	for _, a := range args {
@@ -125,7 +117,7 @@ func parseAssignments(args []string, stdin *os.File) ([]assignment, error) {
 				return nil, fmt.Errorf("%s: read an empty value; write %s= to set one deliberately", name, name)
 			}
 		}
-		out = append(out, assignment{name: name, value: value})
+		out = append(out, dpxapp.Assignment{Name: name, Value: value})
 	}
 	return out, nil
 }
@@ -160,113 +152,34 @@ func promptHidden(stdin *os.File, name string) (string, error) {
 	return string(b), nil
 }
 
-// planned is one line of what a write is about to do.
-type planned struct {
-	kind string // "+", "~", "-", or "=" for unchanged
-	name string
-}
-
-// planChanges compares the requested edits with the config's current secrets
-// and builds the change requests for the ones that change something.
-func planChanges(current []doppler.Secret, sets []assignment, unsets []string) ([]doppler.Change, []planned, error) {
-	byName := make(map[string]doppler.Secret, len(current))
-	for _, s := range current {
-		byName[s.Name] = s
-	}
-
-	var changes []doppler.Change
-	var plan []planned
-	for _, a := range sets {
-		value := a.value
-		cur, exists := byName[a.name]
-		if !exists {
-			changes = append(changes, doppler.Change{Name: a.name, Value: &value})
-			plan = append(plan, planned{"+", a.name})
-			continue
-		}
-		restricted := cur.RawVisibility == "restricted"
-		if !restricted && cur.Raw == value {
-			plan = append(plan, planned{"=", a.name})
-			continue
-		}
-		name := a.name
-		ch := doppler.Change{
-			Name:         a.name,
-			OriginalName: &name,
-			Value:        &value,
-			Visibility:   cur.RawVisibility,
-		}
-		if cur.RawValueType.Type != "" {
-			vt := cur.RawValueType
-			ch.ValueType = &vt
-		}
-		// A restricted value comes back empty, so there is nothing to hold
-		// the write to; asserting "" would reject every update to it.
-		if !restricted {
-			orig := cur.Raw
-			ch.OriginalValue = &orig
-		}
-		changes = append(changes, ch)
-		plan = append(plan, planned{"~", a.name})
-	}
-	for _, n := range unsets {
-		if _, exists := byName[n]; !exists {
-			return nil, nil, fmt.Errorf("no secret %q", n)
-		}
-		name := n
-		changes = append(changes, doppler.Change{Name: n, OriginalName: &name, Delete: true})
-		plan = append(plan, planned{"-", n})
-	}
-	return changes, plan, nil
-}
-
-func applyEdit(ctx context.Context, project, config string, sets []assignment, unsets []string, dryRun bool) error {
+func applyEdit(ctx context.Context, project, config string, sets []dpxapp.Assignment, unsets []string, dryRun bool) error {
 	c, err := open(ctx, dpxapp.Options{AllowStale: true, DeferFetch: true})
 	if err != nil {
 		return err
 	}
-	// The values are read even for a pure deletion: they are what the plan is
-	// checked against, and what makes each update conditional.
-	current, err := c.RevealSecrets(ctx, project, config)
-	if err != nil {
-		return err
-	}
-	changes, plan, err := planChanges(current, sets, unsets)
-	if err != nil {
-		return fmt.Errorf("%s/%s: %w", project, config, err)
-	}
-
 	ref := project + "/" + config
-	fmt.Fprintf(os.Stderr, "%s\n", ref)
-	for _, p := range plan {
-		fmt.Fprintf(os.Stderr, "  %s %s\n", p.kind, p.name)
-	}
-	if len(changes) == 0 {
-		fmt.Fprintln(os.Stderr, "nothing to change")
-		return nil
-	}
-	if dryRun {
-		fmt.Fprintln(os.Stderr, "dry run: nothing written")
-		return nil
-	}
-
-	if err := c.Client.ApplyChanges(ctx, project, config, changes); err != nil {
-		var apiErr *doppler.APIError
-		if errors.As(err, &apiErr) && apiErr.Stale() {
-			return fmt.Errorf("%s: a secret changed after dpx read it, so nothing was written; "+
-				"see `dpx history %s` and run the command again", ref, ref)
+	res, err := c.Edit(ctx, project, config, sets, unsets, dryRun)
+	if res.Plan != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", ref)
+		for _, p := range res.Plan {
+			fmt.Fprintf(os.Stderr, "  %s %s\n", p.Kind, p.Name)
 		}
+	}
+	if errors.Is(err, dpxapp.ErrStale) {
+		return fmt.Errorf("%s: %w; see `dpx history %s` and run the command again", ref, err, ref)
+	}
+	if err != nil {
 		return err
 	}
-	// The write does not answer with the log entry it made, so the newest
-	// entry is read back. Another writer landing in between would make this
-	// the wrong id, which is why the hint is printed alongside what it undoes
-	// rather than run automatically by anything.
-	logs, err := c.Client.ConfigLogs(ctx, project, config, 1, 1)
-	if err != nil || len(logs) == 0 {
+	switch {
+	case !res.Changed:
+		fmt.Fprintln(os.Stderr, "nothing to change")
+	case dryRun:
+		fmt.Fprintln(os.Stderr, "dry run: nothing written")
+	case res.LogID == "":
 		fmt.Fprintln(os.Stderr, "written; see `dpx history "+ref+"` for the log entry")
-		return nil
+	default:
+		fmt.Fprintf(os.Stderr, "written as log %s\nundo: dpx rollback %s %s\n", res.LogID, ref, res.LogID)
 	}
-	fmt.Fprintf(os.Stderr, "written as log %s\nundo: dpx rollback %s %s\n", logs[0].ID, ref, logs[0].ID)
 	return nil
 }

@@ -220,20 +220,21 @@ func TestMembersReturnToWhereItWasOpenedFrom(t *testing.T) {
 	}
 }
 
-// The write keys belong to the access screen; on a secret list `x` must not
-// revoke anything.
+// The member write keys belong to the access screen; on a secret list `x`
+// deletes the secret instead, and must not revoke anything.
 func TestWriteKeysAreInertOutsideTheAccessScreen(t *testing.T) {
 	m := memberModel(t, nil, nil, defaultRoles())
 	m.screen = screenSecrets
 	m.secrets.setRows(rowsOf("TOKEN"))
 
-	for _, key := range []string{"x", "R"} {
-		if _, cmd := m.handleKey(keyOf(key)); cmd != nil {
-			t.Errorf("%q acted on the secrets screen", key)
-		}
-		if m.confirm != nil {
-			t.Errorf("%q staged a confirmation on the secrets screen", key)
-		}
+	if _, cmd := m.handleKey(keyOf("R")); cmd != nil || m.confirm != nil {
+		t.Error(`"R" acted on the secrets screen`)
+	}
+	if _, cmd := m.handleKey(keyOf("x")); cmd != nil {
+		t.Error(`"x" wrote without a confirmation`)
+	}
+	if m.confirm == nil || !strings.HasPrefix(m.confirm.prompt, "delete TOKEN") {
+		t.Errorf(`"x" on secrets staged %+v, want a delete of TOKEN`, m.confirm)
 	}
 }
 

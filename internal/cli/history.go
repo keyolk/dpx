@@ -1,24 +1,16 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/spf13/cobra"
 
 	dpxapp "github.com/keyolk/dpx/internal/app"
 	"github.com/keyolk/dpx/internal/doppler"
 )
-
-// detailWorkers bounds the per-entry fetches history makes. The listing
-// carries no diff, so naming what each entry changed costs one request per
-// entry; eight at once keeps that fast without spending the rate-limit window
-// in a burst.
-const detailWorkers = 8
 
 func newHistoryCmd() *cobra.Command {
 	var (
@@ -65,7 +57,7 @@ given, since a log entry holds both the old and the new value.
 				}
 				if flagJSON {
 					if !withValues {
-						l = redact(l)
+						l = l.Redacted()
 					}
 					return writeJSON(l)
 				}
@@ -81,7 +73,7 @@ given, since a log entry holds both the old and the new value.
 			if key != "" {
 				window = scan
 			}
-			logs, err := loadHistory(cmd.Context(), c.Client, project, config, window)
+			logs, err := c.History(cmd.Context(), project, config, window)
 			if err != nil {
 				return err
 			}
@@ -92,7 +84,7 @@ given, since a log entry holds both the old and the new value.
 				}
 			}
 			for i := range logs {
-				logs[i] = redact(logs[i])
+				logs[i] = logs[i].Redacted()
 			}
 			if flagJSON {
 				return writeJSON(logs)
@@ -100,7 +92,7 @@ given, since a log entry holds both the old and the new value.
 			tw := newTab()
 			for _, l := range logs {
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
-					l.ID, l.CreatedAt.Local().Format("2006-01-02 15:04"), who(l.User), summarize(l))
+					l.ID, l.CreatedAt.Local().Format("2006-01-02 15:04"), l.User.Label(), l.Summary())
 			}
 			return tw.Flush()
 		},
@@ -142,125 +134,42 @@ is printed. --dry-run shows which secrets the revert would touch.`,
 				return err
 			}
 			fmt.Fprintf(os.Stderr, "%s/%s: reverting %s (%s, %s)\n", project, config,
-				target.ID, target.CreatedAt.Local().Format("2006-01-02 15:04"), who(target.User))
+				target.ID, target.CreatedAt.Local().Format("2006-01-02 15:04"), target.User.Label())
 			for _, d := range target.Diff {
-				fmt.Fprintf(os.Stderr, "  %s %s\n", inverse(d.Kind()), d.Name)
+				fmt.Fprintf(os.Stderr, "  %s %s\n", doppler.Inverse(d.Kind()), d.Name)
 			}
 			if dryRun {
 				fmt.Fprintln(os.Stderr, "dry run: nothing written")
 				return nil
 			}
 
-			l, err := c.Client.Rollback(cmd.Context(), project, config, id)
-			if err != nil {
+			l, err := c.Rollback(cmd.Context(), project, config, id)
+			if err != nil && l.ID == "" {
 				return err
 			}
 			ref2 := project + "/" + config
 			fmt.Fprintf(os.Stderr, "written as log %s\nundo: dpx rollback %s %s\n", l.ID, ref2, l.ID)
-			return nil
+			return err
 		},
 	}
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "show what would be reverted without writing")
 	return cmd
 }
 
-// loadHistory lists the newest n entries and fills in each one's diff.
-func loadHistory(ctx context.Context, cl *doppler.Client, project, config string, n int) ([]doppler.ConfigLog, error) {
-	const pageSize = 100
-	var logs []doppler.ConfigLog
-	for page := 1; len(logs) < n; page++ {
-		got, err := cl.ConfigLogs(ctx, project, config, page, min(pageSize, n))
-		if err != nil {
-			return nil, err
-		}
-		logs = append(logs, got...)
-		if len(got) < min(pageSize, n) {
-			break
-		}
-	}
-	if len(logs) > n {
-		logs = logs[:n]
-	}
-
-	errs := make([]error, len(logs))
-	sem := make(chan struct{}, detailWorkers)
-	var wg sync.WaitGroup
-	for i := range logs {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(i int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			full, err := cl.ConfigLog(ctx, project, config, logs[i].ID)
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			logs[i].Diff = full.Diff
-		}(i)
-	}
-	wg.Wait()
-	for _, err := range errs {
-		if err != nil {
-			return nil, err
-		}
-	}
-	return logs, nil
-}
-
 func touching(logs []doppler.ConfigLog, key string) []doppler.ConfigLog {
 	var out []doppler.ConfigLog
 	for _, l := range logs {
-		for _, d := range l.Diff {
-			if d.Name == key {
-				out = append(out, l)
-				break
-			}
+		if l.Touches(key) {
+			out = append(out, l)
 		}
 	}
 	return out
-}
-
-// redact drops the values from a log entry, keeping only which side existed —
-// enough to tell a creation from a change from a deletion.
-func redact(l doppler.ConfigLog) doppler.ConfigLog {
-	hidden := ""
-	out := l
-	out.Diff = make([]doppler.LogDiff, len(l.Diff))
-	for i, d := range l.Diff {
-		r := doppler.LogDiff{Name: d.Name, AddedVis: d.AddedVis, RemovedVis: d.RemovedVis}
-		if d.Added != nil {
-			r.Added = &hidden
-		}
-		if d.Removed != nil {
-			r.Removed = &hidden
-		}
-		out.Diff[i] = r
-	}
-	return out
-}
-
-func summarize(l doppler.ConfigLog) string {
-	var parts []string
-	for _, d := range l.Diff {
-		parts = append(parts, d.Kind()+d.Name)
-	}
-	s := strings.Join(parts, " ")
-	if s == "" {
-		// No secret-level diff: a rename, a lock, an inheritance change. The
-		// API's own sentence is the only description there is.
-		s = l.Text
-	}
-	if l.Rollback {
-		s += "  (rollback)"
-	}
-	return s
 }
 
 func printLog(w io.Writer, l doppler.ConfigLog, withValues bool) {
 	fmt.Fprintf(w, "id    %s\n", l.ID)
 	fmt.Fprintf(w, "time  %s\n", l.CreatedAt.Local().Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(w, "user  %s\n", who(l.User))
+	fmt.Fprintf(w, "user  %s\n", l.User.Label())
 	fmt.Fprintf(w, "text  %s\n", l.Text)
 	if l.Rollback {
 		fmt.Fprintln(w, "      (rollback)")
@@ -290,27 +199,4 @@ func shownValue(v *string, restricted bool) string {
 // into the left margin where the next secret's name goes.
 func indentValue(v string) string {
 	return strings.ReplaceAll(v, "\n", "\n      ")
-}
-
-func who(u doppler.LogUser) string {
-	switch {
-	case u.Email != "":
-		return u.Email
-	case u.Username != "":
-		return u.Username
-	case u.Name != "":
-		return u.Name
-	}
-	return "-"
-}
-
-// inverse is what reverting a change does to each secret.
-func inverse(kind string) string {
-	switch kind {
-	case "+":
-		return "-"
-	case "-":
-		return "+"
-	}
-	return kind
 }

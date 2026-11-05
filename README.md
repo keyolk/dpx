@@ -160,11 +160,29 @@ A rollback is itself a new log entry, so it can be undone the same way.
 | `r` | revalidate the current level |
 | `s` / `S` | reveal the selected value / the whole config |
 | `yc` / `yv` | copy the name / the secret's value (fetched if needed) |
+| `e` / `a` / `x` | on secrets: edit the value / add a secret / delete it |
+| `u` | undo this session's last write to the config; on history: roll back the entry |
+| `H` | change history of the config |
 | `m` | who can access this project |
 | `enter` / `x` | on access: change role / revoke |
 | `o` | open the dashboard page for whatever the cursor is on |
 | `?` | help |
 | `q` | quit |
+
+## Editing in the browser
+
+`e` edits the highlighted secret, starting from its stored value (the raw
+form, so a `${REF}` stays a reference). The value is masked while you type;
+`tab` shows it. `a` asks for a name, then a value. `x` deletes.
+
+Every write is confirmed first, and a prompt for a production config says so
+in capitals. The write takes the same path as `dpx set` — one log entry,
+conditional on the value read, visibility kept — and drops any values already
+on screen, since they may now be the old ones. `u` then offers to undo it.
+
+`H` opens the config's history: one row per change, labelled by the secrets it
+touched, so `/` filters it by name. `u` there rolls the highlighted entry back,
+and `yc` copies its id.
 
 ## Access control
 

@@ -111,3 +111,21 @@ func TestStale(t *testing.T) {
 		t.Error("an unrelated 400 was taken for a precondition failure")
 	}
 }
+
+func TestRedactKeepsShape(t *testing.T) {
+	old, nu := "old", "new"
+	l := ConfigLog{Diff: []LogDiff{
+		{Name: "A", Added: &nu, Removed: &old},
+		{Name: "B", Added: &nu},
+	}}
+	r := l.Redacted()
+	if *r.Diff[0].Added != "" || *r.Diff[0].Removed != "" {
+		t.Error("values survived redaction")
+	}
+	if r.Diff[0].Kind() != "~" || r.Diff[1].Kind() != "+" {
+		t.Error("redaction changed what kind of change it was")
+	}
+	if *l.Diff[0].Added != "new" {
+		t.Error("redaction mutated the original")
+	}
+}
