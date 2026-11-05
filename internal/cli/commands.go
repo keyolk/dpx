@@ -52,6 +52,8 @@ func newConfigsCmd() *cobra.Command {
 		Short: "List a project's configs",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// A trailing slash, as in a half-typed "proj/", names the project.
+			args[0] = strings.TrimSuffix(args[0], "/")
 			c, err := open(cmd.Context(), dpxapp.Options{})
 			if err != nil {
 				return err
@@ -93,15 +95,22 @@ func configFlags(c doppler.Config) string {
 func newSecretsCmd() *cobra.Command {
 	var withValues bool
 	cmd := &cobra.Command{
-		Use:   "secrets <project> <config>",
+		Use:   "secrets <project>/<config>",
 		Short: "List a config's secret names",
 		Long: `List a config's secret names.
 
 Names are served from the local cache and revalidated with an ETag. Values are
 only fetched with --values, and are never cached to disk.`,
-		Args: cobra.ExactArgs(2),
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			project, config := args[0], args[1]
+			ref, rest, err := splitRef(args, 2)
+			if err != nil {
+				return err
+			}
+			if len(rest) > 0 {
+				return fmt.Errorf("unexpected %q", rest[0])
+			}
+			project, config := ref[0], ref[1]
 			c, err := open(cmd.Context(), dpxapp.Options{})
 			if err != nil {
 				return err
@@ -147,16 +156,27 @@ only fetched with --values, and are never cached to disk.`,
 func newGetCmd() *cobra.Command {
 	var raw bool
 	cmd := &cobra.Command{
-		Use:   "get <project> <config> <secret>",
+		Use:   "get <project>/<config>/<secret>",
 		Short: "Print one secret's value",
 		Long: `Print one secret's value.
 
 The value goes to stdout with no trailing newline decoration, so it composes
 with $(...) — which is also why nothing else is ever printed to stdout by this
-command; diagnostics go to stderr.`,
-		Args: cobra.ExactArgs(3),
+command; diagnostics go to stderr.
+
+  export DB_PASSWORD=$(dpx get my-app/prd/DB_PASSWORD)
+
+The parts may also be given separately: dpx get my-app prd DB_PASSWORD.`,
+		Args: cobra.RangeArgs(1, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			project, config, name := args[0], args[1], args[2]
+			ref, rest, err := splitRef(args, 3)
+			if err != nil {
+				return err
+			}
+			if len(rest) > 0 {
+				return fmt.Errorf("unexpected %q", rest[0])
+			}
+			project, config, name := ref[0], ref[1], ref[2]
 			c, err := open(cmd.Context(), dpxapp.Options{})
 			if err != nil {
 				return err
@@ -197,6 +217,9 @@ $BROWSER is honored when set. --print writes the URL to stdout instead of
 opening it, for piping somewhere else.`,
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 && strings.Contains(args[0], "/") {
+				args = strings.SplitN(strings.TrimSuffix(args[0], "/"), "/", 2)
+			}
 			var project, configName string
 			if len(args) > 0 {
 				project = args[0]

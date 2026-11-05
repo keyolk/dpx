@@ -123,6 +123,13 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, etag string
 // is the write counterpart to get: no ETag, no caching, since a mutation has
 // nothing to revalidate against.
 func (c *Client) send(ctx context.Context, method, path string, q url.Values, body any) error {
+	_, err := c.sendRead(ctx, method, path, q, body)
+	return err
+}
+
+// sendRead is send for the mutations whose response is worth reading, such as
+// a rollback that answers with the log entry it created.
+func (c *Client) sendRead(ctx context.Context, method, path string, q url.Values, body any) ([]byte, error) {
 	u := c.apiHost + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
@@ -131,13 +138,13 @@ func (c *Client) send(ctx context.Context, method, path string, q url.Values, bo
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		r = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, r)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.SetBasicAuth(c.token, "")
 	req.Header.Set("Accept", "application/json")
@@ -147,19 +154,19 @@ func (c *Client) send(ctx context.Context, method, path string, q url.Values, bo
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	defer resp.Body.Close()
 	c.observeRate(resp)
 
 	rb, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{Status: resp.StatusCode, Message: apiMessage(rb), Path: path}
+		return nil, &APIError{Status: resp.StatusCode, Message: apiMessage(rb), Path: path}
 	}
-	return nil
+	return rb, nil
 }
 
 func (c *Client) observeRate(resp *http.Response) {
